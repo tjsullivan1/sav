@@ -1,163 +1,109 @@
-# Web Application Template
+# 📰 ➡️ 🎙️ Blog to Podcast
 
-A comprehensive template repository for building and deploying web applications with modern DevOps practices.
+A Streamlit app that turns any public blog post into a podcast episode. It scrapes the
+article with **Firecrawl**, summarizes it into a conversational script with **Azure OpenAI**
+(via an [agno](https://github.com/agno-agi/agno) agent), and narrates it with **ElevenLabs**.
 
 ## 🏗️ Repository Structure
 
 ```
 ├── .github/
-│   ├── workflows/
-│   │   ├── ci.yml                    # Continuous Integration pipeline
-│   │   ├── infra-plan-apply.yml      # Infrastructure deployment
-│   │   └── deploy-webapp.yml         # Application deployment
-│   └── dependabot.yml                # Dependency updates configuration
-├── infra/
-│   └── terraform/                    # Infrastructure as Code
-│       ├── backend.hcl               # Terraform backend configuration
-│       ├── providers.tf              # Provider configurations
-│       ├── main.tf                   # Main infrastructure resources
-│       ├── variables.tf              # Input variables
-│       ├── outputs.tf                # Output values
+│   └── workflows/
+│       ├── ci.yml                    # Lint, test, build & push image to ACR
+│       └── dependabot.yml            # Dependency updates configuration
 ├── src/
-│   ├── Dockerfile                    # Container configuration
-│   └── app/                          # Application source code
-├── CODEOWNERS                        # Code ownership rules
-├── LICENSE                           # License file
-└── README.md                         # This file
+│   └── blog_to_podcast/
+│       ├── app.py                    # Streamlit UI
+│       ├── __main__.py               # CLI entry point (`blog-to-podcast`)
+│       ├── config.py                 # Settings resolved from env / sidebar
+│       ├── summarizer.py             # Firecrawl scrape + Azure OpenAI summary
+│       └── tts.py                    # ElevenLabs text-to-speech
+├── tests/                            # pytest suite mirroring src/
+├── Dockerfile                        # Multi-stage uv + Python 3.12 image
+├── pyproject.toml                    # Project, ruff, and pytest config
+└── uv.lock                           # Locked dependencies
 ```
 
 ## 🚀 Features
 
--- **Infrastructure as Code**: Complete infrastructure using Terraform
-- **CI/CD Pipelines**: Automated testing, building, and deployment
-- **Container Ready**: Docker configuration for containerized deployment
-- **Monitoring**: Health check endpoints and logging
+- **Blog scraping** — pulls the full content of any public blog URL via Firecrawl.
+- **Summary generation** — an agno agent produces an engaging summary (≤ 2000 characters).
+- **Podcast generation** — converts the summary to MP3 audio with an ElevenLabs voice.
+- **Flexible credentials** — read from environment variables, overridable in the sidebar.
+- **Container ready** — multi-stage Docker build with a health check and non-root user.
 
 ## 🛠️ Technology Stack
 
-### Application
-
-### Infrastructure
-
-### DevOps
-- **CI/CD**: GitHub Actions
-- **Container Registry**: GitHub Container Registry
-- **Dependency Management**: Dependabot
-- **Code Ownership**: CODEOWNERS file
+- **Language**: Python 3.12
+- **UI**: Streamlit
+- **Agent framework**: agno + Azure OpenAI (v1 API surface)
+- **Scraping**: Firecrawl
+- **TTS**: ElevenLabs
+- **Tooling**: uv, ruff, pytest
+- **CI/CD**: GitHub Actions → Azure Container Registry
 
 ## 🏁 Quick Start
 
 ### Prerequisites
 
-- Docker installed
-- Terraform installed
-- GitHub CLI (optional)
+- Python 3.12+
+- [uv](https://docs.astral.sh/uv/):
+  ```bash
+  # macOS / Linux
+  curl -LsSf https://astral.sh/uv/install.sh | sh
 
-### Local Development
+  # Windows
+  powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+  ```
+- API keys for **Azure OpenAI**, **ElevenLabs**, and **Firecrawl**.
 
-1. **Clone the repository**
-   ```bash
-   git clone <your-repo-url>
-   cd starter-repo
-   ```
+### Local development
 
-2. **Install dependencies**
-   ```bash
-   cd src/app
-   ```
+```bash
+uv sync                      # create the virtualenv and install dependencies
+cp .env.example .env         # optional: pre-fill credentials
+uv run streamlit run src/blog_to_podcast/app.py
+```
 
-3. **Run the application**
-   ```bash
-   ```
+Then open http://localhost:8501, fill in any missing keys in the sidebar, paste a blog URL,
+and click **🎙️ Generate Podcast**.
 
-4. **Run tests**
-   ```bash
-   ```
+### Configuration
 
-5. **Access the application**
+Every value can be supplied via environment variable or entered in the sidebar at runtime.
 
-### Docker Development
+| Variable | Required | Description |
+| --- | --- | --- |
+| `AZURE_OPENAI_BASE_URL` | ✅ | v1 base URL, e.g. `https://<resource>.openai.azure.com/openai/v1/` |
+| `AZURE_OPENAI_DEPLOYMENT` | ✅ | Chat model deployment name, e.g. `gpt-4o` |
+| `AZURE_OPENAI_API_KEY` | ✅ | Azure OpenAI API key |
+| `ELEVENLABS_API_KEY` | ✅ | ElevenLabs API key |
+| `FIRECRAWL_API_KEY` | ✅ | Firecrawl API key |
+| `ELEVENLABS_VOICE_ID` | — | Voice override (default `JBFqnCBsd6RMkjVDRZzb`) |
+| `ELEVENLABS_MODEL_ID` | — | TTS model override (default `eleven_multilingual_v2`) |
 
-1. **Build the Docker image**
-   ```bash
-   cd src
-   docker build -t webapp-template .
-   ```
+### Tests and linting
 
-2. **Run the container**
-   ```bash
-   docker run -p 3000:3000 webapp-template
-   ```
+```bash
+uv run pytest
+uv run ruff check .
+uv run ruff format --check .
+```
 
-## 🏭 Deployment
+### Docker
 
-### Infrastructure Setup
+```bash
+docker build -t blog-to-podcast .
+docker run --rm -p 8501:8501 --env-file .env blog-to-podcast
+```
 
-1. **Configure Terraform backend**
-   
-   The `infra/terraform/backend.hcl` should pull your Azure container details from env variables.
+## 🙏 Credits
 
-2. **Initialize and deploy infrastructure**
-   ```bash
-   cd infra/terraform
-   terraform init -backend-config=backend.hcl
-   terraform plan
-   terraform apply
-   ```
-
-### Application Deployment
-
-The application is automatically deployed when code is pushed to the `main` branch. The deployment pipeline:
-
-1. **CI Pipeline** (`ci.yml`): Runs tests and builds the application
-2. **Infrastructure Pipeline** (`infra-plan-apply.yml`): Plans and applies infrastructure changes
-3. **Deployment Pipeline** (`deploy-webapp.yml`): Builds and deploys the application
-
-### Environment Variables
-
-Configure the following secrets in your GitHub repository by running the script
-
-## 🔧 Configuration
-
-### Terraform Variables
-
-Key variables you can customize in `infra/terraform/variables.tf`:
-
-
-### Application Configuration
-
-The application can be configured through environment variables:
-
-- `PORT`: Application port (default: 3000)
-- `NODE_ENV`: Environment mode (development, production)
-
-## 🧪 Testing
-
-## 📦 Dependencies
-
-### Production Dependencies
-
-### Development Dependencies
-
-## 🤝 Contributing
-
-1. Create a feature branch from `main`
-2. Make your changes
-3. Ensure tests pass and linting is clean
-4. Submit a pull request
+Adapted from the `ai_blog_to_podcast_agent` starter in
+[Shubhamsaboo/awesome-llm-apps](https://github.com/Shubhamsaboo/awesome-llm-apps), using the
+uv + Azure OpenAI variant from
+[PR #1096](https://github.com/Shubhamsaboo/awesome-llm-apps/pull/1096).
 
 ## 📄 License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🆘 Support
-
-For support and questions:
-
-1. Check the [Issues](../../issues) page
-2. Review the [Wiki](../../wiki) for additional documentation
-3. Contact the maintainers listed in [CODEOWNERS](CODEOWNERS)
-
----
-
-**Happy coding! 🎉**
+See [LICENSE](LICENSE).
