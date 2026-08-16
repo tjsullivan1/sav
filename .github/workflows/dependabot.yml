@@ -1,25 +1,25 @@
 version: 2
 updates:
-  # Enable version updates for npm
-  - package-ecosystem: "npm"
-    directory: "/src/app"
+  # Enable version updates for Python (uv)
+  - package-ecosystem: "uv"
+    directory: "/"
     schedule:
       interval: "weekly"
       day: "monday"
       time: "09:00"
     open-pull-requests-limit: 10
     assignees:
-      - "your-org/maintainers"
+      - "tjsullivan1"
     commit-message:
       prefix: "chore"
       include: "scope"
     labels:
       - "dependencies"
-      - "npm"
+      - "python"
 
   # Enable version updates for Docker
   - package-ecosystem: "docker"
-    directory: "/src"
+    directory: "/"
     schedule:
       interval: "weekly"
       day: "monday"
