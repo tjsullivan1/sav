@@ -54,6 +54,21 @@ resource "azurerm_role_assignment" "github_actions_plan_state_blob_reader" {
   principal_id         = azuread_service_principal.github_actions_plan.object_id
 }
 
+resource "azurerm_role_assignment" "github_actions_plan_state_reader" {
+  scope                = data.azurerm_storage_account.terraform_state.id
+  role_definition_name = "Reader"
+  principal_id         = azuread_service_principal.github_actions_plan.object_id
+}
+
+resource "azuread_directory_role" "directory_readers" {
+  template_id = "62e90394-69f5-4237-9190-012177145e10"
+}
+
+resource "azuread_directory_role_assignment" "github_actions_plan_directory_reader" {
+  role_id             = azuread_directory_role.directory_readers.object_id
+  principal_object_id = azuread_service_principal.github_actions_plan.object_id
+}
+
 resource "azurerm_role_assignment" "github_actions_deploy_production_contributor" {
   scope                = azurerm_resource_group.production.id
   role_definition_name = "Contributor"
