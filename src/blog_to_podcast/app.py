@@ -7,23 +7,21 @@ import logging
 import streamlit as st
 
 from blog_to_podcast.config import Settings
-from blog_to_podcast.summarizer import summarize_blog
-from blog_to_podcast.tts import text_to_speech
+from blog_to_podcast.episodes import generate_summary_episode
 
 logger = logging.getLogger(__name__)
 
 
 def _generate(url: str, settings: Settings) -> None:
-    """Run the scrape → summarize → narrate pipeline and render the results."""
+    """Generate and render a Summary Episode."""
     with st.spinner("Scraping blog and generating podcast..."):
-        summary = summarize_blog(url.strip(), settings)
-        audio_bytes = text_to_speech(summary, settings)
+        episode = generate_summary_episode(url.strip(), settings)
 
     st.success("Podcast generated! 🎧")
-    st.audio(audio_bytes, format="audio/mp3")
-    st.download_button("Download Podcast", audio_bytes, "podcast.mp3", "audio/mp3")
+    st.audio(episode.audio, format="audio/mp3")
+    st.download_button("Download Podcast", episode.audio, "podcast.mp3", "audio/mp3")
     with st.expander("📄 Podcast Summary"):
-        st.write(summary)
+        st.write(episode.script)
 
 
 def main() -> None:
