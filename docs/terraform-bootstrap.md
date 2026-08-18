@@ -72,11 +72,12 @@ backend. Substitute the names selected above.
 az login --tenant "<tenant-id>"
 az account set --subscription "<subscription-id>"
 Set-Location infra
+$stateKey = "blog-to-podcast/production.tfstate"
 terraform init -input=false `
   -backend-config="resource_group_name=rg-blog-to-podcast-tfstate" `
   -backend-config="storage_account_name=<globally-unique-storage-account>" `
   -backend-config="container_name=tfstate" `
-  -backend-config="key=production.tfstate" `
+  -backend-config="key=$stateKey" `
   -backend-config="use_azuread_auth=true"
 terraform apply -input=false `
   -var="tf_state_resource_group_name=rg-blog-to-podcast-tfstate" `
@@ -102,6 +103,7 @@ Actions > Variables**. These are identifiers, not secrets:
 | `TF_STATE_RESOURCE_GROUP` | State resource group name |
 | `TF_STATE_STORAGE_ACCOUNT` | State storage account name |
 | `TF_STATE_CONTAINER` | `tfstate` |
+| `TF_STATE_KEY` | A unique state path, such as `blog-to-podcast/production.tfstate` |
 
 Open a pull request after setting the variables. Until every bootstrap variable is present, the plan
 job is skipped rather than attempting an incomplete Azure login. Once configured, the workflow

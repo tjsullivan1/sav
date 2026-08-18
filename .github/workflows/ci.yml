@@ -48,7 +48,8 @@ jobs:
       vars.AZURE_SUBSCRIPTION_ID != '' &&
       vars.TF_STATE_RESOURCE_GROUP != '' &&
       vars.TF_STATE_STORAGE_ACCOUNT != '' &&
-      vars.TF_STATE_CONTAINER != ''
+      vars.TF_STATE_CONTAINER != '' &&
+      vars.TF_STATE_KEY != ''
     needs: [test, build]
     runs-on: ubuntu-latest
     permissions:
@@ -78,7 +79,7 @@ jobs:
           -backend-config="resource_group_name=${{ vars.TF_STATE_RESOURCE_GROUP }}"
           -backend-config="storage_account_name=${{ vars.TF_STATE_STORAGE_ACCOUNT }}"
           -backend-config="container_name=${{ vars.TF_STATE_CONTAINER }}"
-          -backend-config="key=production.tfstate"
+          -backend-config="key=${{ vars.TF_STATE_KEY }}"
           -backend-config="use_azuread_auth=true"
 
       - name: Validate Terraform
