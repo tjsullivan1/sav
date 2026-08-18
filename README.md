@@ -1,8 +1,9 @@
 # Blog to Podcast
 
 Blog to Podcast is a local Streamlit tool that turns an eligible public article into a concise,
-conversational audio summary. Firecrawl retrieves the article, Azure OpenAI (through
-[agno](https://github.com/agno-agi/agno)) writes the summary, and ElevenLabs synthesizes the audio.
+conversational audio summary or a speech-cleaned, near-verbatim narration. Firecrawl retrieves the
+article, Azure OpenAI (through [agno](https://github.com/agno-agi/agno)) writes summaries, and
+ElevenLabs synthesizes the audio.
 
 Generated episodes are retained locally in `.sav/episodes/`. Repeating a request reuses the stored
 audio when available. When normalized article content is supplied with a new fingerprint, the app
@@ -13,8 +14,15 @@ article content** to retrieve the source again and detect a new revision.
 
 The UI delegates episode creation to the UI-independent `EpisodeGenerationWorkflow`. An
 `EpisodeRequest` carries the article, script strategy, and voice selection, while credentials stay
-in runtime configuration. For Summary Episodes, Firecrawl retrieves normalized article content,
-agno/Azure OpenAI writes the conversational script, and ElevenLabs synthesizes playable audio.
+in runtime configuration. The UI requires an explicit strategy selection. Summary Episodes use
+agno/Azure OpenAI for a conversational rewrite; Narration Episodes retain the article substance
+while cleaning Markdown material unsuitable for speech. Narration splits long scripts at paragraph
+boundaries and uses ffmpeg to stitch synthesized chunks into one playable Episode.
+
+Before a Narration run above the configured character threshold, the UI displays its estimated
+character count and listening duration. Select the confirmation box and run it again to begin
+synthesis. Configure the threshold and model cap with `NARRATION_CONFIRMATION_THRESHOLD`,
+`NARRATION_CHARACTERS_PER_MINUTE`, and `ELEVENLABS_TTS_CHARACTER_CAP`.
 
 ## Local development
 
