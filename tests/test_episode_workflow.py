@@ -37,6 +37,23 @@ class FailingArticleRetriever:
         raise ArticleRetrievalError("source unavailable")
 
 
+class FailingEpisodeStore:
+    def find(self, request: EpisodeRequest, content_fingerprint: str) -> Episode | None:
+        raise OSError("storage unavailable")
+
+    def find_latest(self, request: EpisodeRequest) -> Episode | None:
+        raise OSError("storage unavailable")
+
+    def next_revision(self, request: EpisodeRequest) -> int:
+        raise OSError("storage unavailable")
+
+    def save(self, request: EpisodeRequest, episode: Episode) -> None:
+        raise OSError("storage unavailable")
+
+    def record_failure(self, request: EpisodeRequest, failure_state: str) -> None:
+        raise OSError("storage unavailable")
+
+
 class FakeSummaryScriptStrategy:
     name = ScriptStrategy.SUMMARY
 
@@ -319,6 +336,18 @@ def test_reports_an_actionable_retrieval_failure(tmp_path) -> None:
             audio_synthesizer=FakeAudioSynthesizer(),
             episode_store=LocalEpisodeStore(tmp_path / "episodes"),
         ).generate(_request(Article(url="https://example.com/unavailable")))
+
+
+def test_reports_an_actionable_episode_storage_failure() -> None:
+    workflow = EpisodeGenerationWorkflow(
+        article_retriever=FakeArticleRetriever(),
+        script_strategies={ScriptStrategy.SUMMARY: FakeSummaryScriptStrategy()},
+        audio_synthesizer=FakeAudioSynthesizer(),
+        episode_store=FailingEpisodeStore(),
+    )
+
+    with pytest.raises(EpisodeGenerationError, match="episode storage"):
+        workflow.generate(_request())
 
 
 def test_narration_cleans_article_text_without_summarizing(tmp_path) -> None:

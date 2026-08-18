@@ -396,9 +396,9 @@ class EpisodeGenerationWorkflow:
     def _generate(self, request: EpisodeRequest) -> Episode:
         """Generate an episode while serializing local revision allocation."""
         if request.article.content_fingerprint:
-            stored_episode = self._episode_store.find(request, request.article.content_fingerprint)
+            stored_episode = self._find_stored_episode(request, request.article.content_fingerprint)
         elif not request.refresh_source:
-            stored_episode = self._episode_store.find_latest(request)
+            stored_episode = self._find_latest_episode(request)
         else:
             stored_episode = None
         if stored_episode is not None:
@@ -410,12 +410,12 @@ class EpisodeGenerationWorkflow:
             else:
                 article = self._article_retriever.retrieve(request.article)
         except ArticleRetrievalError as exc:
-            self._episode_store.record_failure(request, "article_retrieval")
+            self._record_storage_failure(request, "article_retrieval")
             raise EpisodeGenerationError(
                 "Could not retrieve the article. Confirm the URL is public and available."
             ) from exc
 
-        stored_episode = self._episode_store.find(request, article.content_fingerprint)
+        stored_episode = self._find_stored_episode(request, article.content_fingerprint)
         if stored_episode is not None:
             return stored_episode
 
@@ -428,7 +428,7 @@ class EpisodeGenerationWorkflow:
         try:
             script = strategy.create_script(article)
         except ScriptCreationError as exc:
-            self._episode_store.record_failure(request, "script_creation")
+            self._record_storage_failure(request, "script_creation")
             raise EpisodeGenerationError("Could not create the episode script.") from exc
 
         if (
@@ -454,11 +454,11 @@ class EpisodeGenerationWorkflow:
                 else b"".join(audio_chunks)
             )
         except (AudioGenerationError, AudioStitchingError) as exc:
-            self._episode_store.record_failure(request, "audio_synthesis")
+            self._record_storage_failure(request, "audio_synthesis")
             raise EpisodeGenerationError("Could not synthesize the episode audio.") from exc
 
         if not audio:
-            self._episode_store.record_failure(request, "empty_audio")
+            self._record_storage_failure(request, "empty_audio")
             raise EpisodeGenerationError("Audio synthesis returned no playable audio.")
         try:
             audio_duration_seconds = (
@@ -467,9 +467,9 @@ class EpisodeGenerationWorkflow:
                 else None
             )
         except AudioStitchingError as exc:
-            self._episode_store.record_failure(request, "audio_duration")
+            self._record_storage_failure(request, "audio_duration")
             raise EpisodeGenerationError("Could not measure the episode audio duration.") from exc
-        revision = self._episode_store.next_revision(request)
+        revision = self._next_revision(request)
         revision_note = ""
         source_title = article.title
         if revision > 1:
@@ -492,8 +492,45 @@ class EpisodeGenerationWorkflow:
             revision_note=revision_note,
             source_title=source_title,
         )
-        self._episode_store.save(request, episode)
+        self._save_episode(request, episode)
         return episode
+
+    def _find_stored_episode(
+        self, request: EpisodeRequest, content_fingerprint: str
+    ) -> Episode | None:
+        """Find a matching Episode while translating local storage errors."""
+        try:
+            return self._episode_store.find(request, content_fingerprint)
+        except OSError as exc:
+            raise EpisodeGenerationError("Could not access the local episode storage.") from exc
+
+    def _find_latest_episode(self, request: EpisodeRequest) -> Episode | None:
+        """Find the latest Episode while translating local storage errors."""
+        try:
+            return self._episode_store.find_latest(request)
+        except OSError as exc:
+            raise EpisodeGenerationError("Could not access the local episode storage.") from exc
+
+    def _record_storage_failure(self, request: EpisodeRequest, failure_state: str) -> None:
+        """Record a workflow failure while translating local storage errors."""
+        try:
+            self._episode_store.record_failure(request, failure_state)
+        except OSError as exc:
+            raise EpisodeGenerationError("Could not access the local episode storage.") from exc
+
+    def _next_revision(self, request: EpisodeRequest) -> int:
+        """Allocate a revision while translating local storage errors."""
+        try:
+            return self._episode_store.next_revision(request)
+        except OSError as exc:
+            raise EpisodeGenerationError("Could not access the local episode storage.") from exc
+
+    def _save_episode(self, request: EpisodeRequest, episode: Episode) -> None:
+        """Persist an Episode while translating local storage errors."""
+        try:
+            self._episode_store.save(request, episode)
+        except OSError as exc:
+            raise EpisodeGenerationError("Could not access the local episode storage.") from exc
 
 
 class FirecrawlArticleRetriever:
