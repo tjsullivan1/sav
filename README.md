@@ -68,6 +68,13 @@ docker compose up --build
 
 Compose reads `.env` when it exists. Stop the application with `docker compose down`.
 
+## Azure delivery bootstrap
+
+The production Terraform foundation uses an Azure AD-protected remote state backend and GitHub
+Actions OIDC; it does not use stored Azure credentials. Follow the one-time
+[Terraform state and GitHub OIDC bootstrap](docs/terraform-bootstrap.md) before opening a pull
+request that changes infrastructure.
+
 ## Personal-use source boundary
 
 Use this tool only for public content you are entitled to process. Respect site terms, robots
