@@ -4,6 +4,11 @@ Blog to Podcast is a local Streamlit tool that turns an eligible public article 
 conversational audio summary. Firecrawl retrieves the article, Azure OpenAI (through
 [agno](https://github.com/agno-agi/agno)) writes the summary, and ElevenLabs synthesizes the audio.
 
+Generated episodes are retained locally in `.sav/episodes/`. Repeating a request reuses the stored
+audio when available. When normalized article content is supplied with a new fingerprint, the app
+retains a new revision and marks it as `UPDATED CONTENT` for listeners. Select **Check for updated
+article content** to retrieve the source again and detect a new revision.
+
 ## Episode generation
 
 The UI delegates episode creation to the UI-independent `EpisodeGenerationWorkflow`. An

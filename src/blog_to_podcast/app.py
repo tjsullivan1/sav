@@ -12,12 +12,15 @@ from blog_to_podcast.episodes import generate_summary_episode
 logger = logging.getLogger(__name__)
 
 
-def _generate(url: str, settings: Settings) -> None:
+def _generate(url: str, settings: Settings, *, refresh_source: bool) -> None:
     """Generate and render a Summary Episode."""
     with st.spinner("Scraping blog and generating podcast..."):
-        episode = generate_summary_episode(url.strip(), settings)
+        episode = generate_summary_episode(url.strip(), settings, refresh_source=refresh_source)
 
-    st.success("Podcast generated! 🎧")
+    st.success("Podcast ready! 🎧")
+    st.subheader(episode.article.title)
+    if episode.revision_note:
+        st.info(episode.revision_note)
     st.audio(episode.audio, format="audio/mp3")
     st.download_button("Download Podcast", episode.audio, "podcast.mp3", "audio/mp3")
     with st.expander("📄 Podcast Summary"):
@@ -31,13 +34,14 @@ def main() -> None:
 
     settings = Settings.from_env()
     url = st.text_input("Enter Blog URL:", "")
+    refresh_source = st.checkbox("Check for updated article content")
 
     if st.button("🎙️ Generate Podcast", disabled=not settings.is_complete):
         if not url.strip():
             st.warning("Please enter a blog URL")
             return
         try:
-            _generate(url, settings)
+            _generate(url, settings, refresh_source=refresh_source)
         except Exception as exc:  # noqa: BLE001 - surface any failure to the user
             logger.exception("podcast generation failed")
             st.error(f"Error: {exc}")

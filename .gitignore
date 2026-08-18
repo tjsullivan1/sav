@@ -10,6 +10,7 @@ venv/
 .coverage
 htmlcov/
 .env
+.sav/
 .env.*
 !.env.example
 *.mp3
