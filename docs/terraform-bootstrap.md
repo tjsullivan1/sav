@@ -103,6 +103,7 @@ Actions > Variables**. These are identifiers, not secrets:
 | `TF_STATE_STORAGE_ACCOUNT` | State storage account name |
 | `TF_STATE_CONTAINER` | `tfstate` |
 
-Open a pull request after setting the variables. The workflow requests a short-lived GitHub OIDC
-token, produces a non-locking read-only Terraform plan, and has no `terraform apply` step. It never
-accepts a stored Azure credential.
+Open a pull request after setting the variables. Until every bootstrap variable is present, the plan
+job is skipped rather than attempting an incomplete Azure login. Once configured, the workflow
+requests a short-lived GitHub OIDC token, produces a non-locking read-only Terraform plan, and has
+no `terraform apply` step. It never accepts a stored Azure credential.
