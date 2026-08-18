@@ -1,8 +1,6 @@
 .git
 .github
 .venv
-.platform-mode
-utils
 **/__pycache__
 **/*.py[cod]
 **/.pytest_cache
