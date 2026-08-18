@@ -7,53 +7,43 @@ import logging
 import streamlit as st
 
 from blog_to_podcast.config import Settings
-from blog_to_podcast.summarizer import summarize_blog
-from blog_to_podcast.tts import text_to_speech
+from blog_to_podcast.episodes import (
+    NarrationConfirmationRequiredError,
+    ScriptStrategy,
+    generate_episode,
+)
 
 logger = logging.getLogger(__name__)
 
 
-def _sidebar_settings() -> Settings:
-    """Render the credential sidebar, pre-filled from the environment."""
-    defaults = Settings.from_env()
-    st.sidebar.header("🔑 API Configuration")
-
-    return Settings(
-        azure_openai_base_url=st.sidebar.text_input(
-            "Azure OpenAI v1 Base URL",
-            value=defaults.azure_openai_base_url,
-            placeholder="https://<resource-name>.openai.azure.com/openai/v1/",
-        ),
-        azure_openai_deployment=st.sidebar.text_input(
-            "Azure OpenAI Deployment Name",
-            value=defaults.azure_openai_deployment,
-            placeholder="gpt-4o",
-        ),
-        azure_openai_api_key=st.sidebar.text_input(
-            "Azure OpenAI API Key", value=defaults.azure_openai_api_key, type="password"
-        ),
-        elevenlabs_api_key=st.sidebar.text_input(
-            "ElevenLabs API Key", value=defaults.elevenlabs_api_key, type="password"
-        ),
-        firecrawl_api_key=st.sidebar.text_input(
-            "Firecrawl API Key", value=defaults.firecrawl_api_key, type="password"
-        ),
-        voice_id=defaults.voice_id,
-        tts_model_id=defaults.tts_model_id,
-    )
-
-
-def _generate(url: str, settings: Settings) -> None:
-    """Run the scrape → summarize → narrate pipeline and render the results."""
+def _generate(
+    url: str,
+    settings: Settings,
+    script_strategy: ScriptStrategy,
+    *,
+    voice_id: str,
+    refresh_source: bool,
+    narration_confirmed: bool,
+) -> None:
+    """Generate and render an Episode."""
     with st.spinner("Scraping blog and generating podcast..."):
-        summary = summarize_blog(url.strip(), settings)
-        audio_bytes = text_to_speech(summary, settings)
+        episode = generate_episode(
+            url.strip(),
+            settings,
+            script_strategy,
+            voice_id=voice_id,
+            refresh_source=refresh_source,
+            narration_confirmed=narration_confirmed,
+        )
 
-    st.success("Podcast generated! 🎧")
-    st.audio(audio_bytes, format="audio/mp3")
-    st.download_button("Download Podcast", audio_bytes, "podcast.mp3", "audio/mp3")
+    st.success("Podcast ready! 🎧")
+    st.subheader(episode.article.title)
+    if episode.revision_note:
+        st.info(episode.revision_note)
+    st.audio(episode.audio, format="audio/mp3")
+    st.download_button("Download Podcast", episode.audio, "podcast.mp3", "audio/mp3")
     with st.expander("📄 Podcast Summary"):
-        st.write(summary)
+        st.write(episode.script)
 
 
 def main() -> None:
@@ -61,23 +51,62 @@ def main() -> None:
     st.set_page_config(page_title="📰 ➡️ 🎙️ Blog to Podcast", page_icon="🎙️")
     st.title("📰 ➡️ 🎙️ Blog to Podcast Agent")
 
-    settings = _sidebar_settings()
+    settings = Settings.from_env()
     url = st.text_input("Enter Blog URL:", "")
+    strategy = ScriptStrategy(
+        st.selectbox(
+            "Script strategy",
+            options=[strategy.value for strategy in ScriptStrategy],
+            format_func=str.title,
+        )
+    )
+    voice_id = st.text_input(
+        "Voice ID",
+        value=settings.voice_id,
+        help="Enter the ElevenLabs voice identifier for this Episode.",
+    )
+    refresh_source = st.checkbox("Check for updated article content")
+    narration_key = f"{url.strip()}:{strategy.value}"
+    narration_preflight_ready = (
+        st.session_state.get("narration_preflight_key") == narration_key
+        and strategy is ScriptStrategy.NARRATION
+    )
+    narration_confirmed = False
+    if narration_preflight_ready:
+        st.warning(str(st.session_state["narration_preflight_estimate"]))
+        narration_confirmed = st.checkbox(
+            "I confirm this Narration run after reviewing its estimated size and duration."
+        )
 
     if st.button("🎙️ Generate Podcast", disabled=not settings.is_complete):
         if not url.strip():
             st.warning("Please enter a blog URL")
             return
+        if not voice_id.strip():
+            st.warning("Please enter a Voice ID")
+            return
         try:
-            _generate(url, settings)
+            _generate(
+                url,
+                settings,
+                strategy,
+                voice_id=voice_id.strip(),
+                refresh_source=refresh_source,
+                narration_confirmed=narration_confirmed,
+            )
+        except NarrationConfirmationRequiredError as exc:
+            st.session_state["narration_preflight_key"] = narration_key
+            st.session_state["narration_preflight_estimate"] = str(exc)
+            st.rerun()
         except Exception as exc:  # noqa: BLE001 - surface any failure to the user
             logger.exception("podcast generation failed")
             st.error(f"Error: {exc}")
+        else:
+            st.session_state.pop("narration_preflight_key", None)
+            st.session_state.pop("narration_preflight_estimate", None)
 
     if not settings.is_complete:
-        st.info(
-            "Add the missing credentials in the sidebar: " + ", ".join(settings.missing_fields())
-        )
+        st.info(settings.startup_feedback())
 
 
 main()

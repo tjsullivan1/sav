@@ -1,4 +1,4 @@
-import os
+from pathlib import Path
 
 import pytest
 
@@ -10,6 +10,14 @@ REQUIRED = {
     "azure_openai_api_key": "aoai-key",
     "elevenlabs_api_key": "el-key",
     "firecrawl_api_key": "fc-key",
+}
+
+DOTENV_REQUIRED = {
+    "AZURE_OPENAI_BASE_URL": "https://example.openai.azure.com/openai/v1/",
+    "AZURE_OPENAI_DEPLOYMENT": "gpt-4o",
+    "AZURE_OPENAI_API_KEY": "aoai-key",
+    "ELEVENLABS_API_KEY": "el-key",
+    "FIRECRAWL_API_KEY": "fc-key",
 }
 
 ENV_VARS = [
@@ -24,9 +32,10 @@ ENV_VARS = [
 
 
 @pytest.fixture(autouse=True)
-def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def _clean_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     for name in ENV_VARS:
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.chdir(tmp_path)
 
 
 def test_defaults_are_empty_and_incomplete() -> None:
@@ -61,4 +70,28 @@ def test_from_env_reads_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.is_complete
     assert settings.voice_id == "custom-voice"
     assert settings.tts_model_id == DEFAULT_TTS_MODEL
-    assert os.getenv("ELEVENLABS_MODEL_ID") is None
+
+
+def test_from_env_reads_an_optional_dotenv_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    dotenv = tmp_path / ".env"
+    dotenv.write_text(
+        "\n".join(f"{name}={value}" for name, value in DOTENV_REQUIRED.items()),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    settings = Settings.from_env()
+
+    assert settings.is_complete
+
+
+def test_startup_feedback_names_missing_environment_variables() -> None:
+    settings = Settings()
+
+    assert settings.startup_feedback() == (
+        "Set the following required environment variables: "
+        "AZURE_OPENAI_BASE_URL, AZURE_OPENAI_DEPLOYMENT, AZURE_OPENAI_API_KEY, "
+        "ELEVENLABS_API_KEY, FIRECRAWL_API_KEY."
+    )

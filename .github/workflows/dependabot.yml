@@ -48,19 +48,3 @@ updates:
     labels:
       - "dependencies"
       - "github-actions"
-
-  # Enable version updates for Terraform
-  - package-ecosystem: "terraform"
-    directory: "/infra/terraform"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-      time: "09:00"
-    assignees:
-      - "tjsullivan1"
-    commit-message:
-      prefix: "chore"
-      include: "scope"
-    labels:
-      - "dependencies"
-      - "terraform"
