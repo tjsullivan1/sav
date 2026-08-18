@@ -21,6 +21,7 @@ def _generate(
     settings: Settings,
     script_strategy: ScriptStrategy,
     *,
+    voice_id: str,
     refresh_source: bool,
     narration_confirmed: bool,
 ) -> None:
@@ -30,6 +31,7 @@ def _generate(
             url.strip(),
             settings,
             script_strategy,
+            voice_id=voice_id,
             refresh_source=refresh_source,
             narration_confirmed=narration_confirmed,
         )
@@ -58,6 +60,11 @@ def main() -> None:
             format_func=str.title,
         )
     )
+    voice_id = st.text_input(
+        "Voice ID",
+        value=settings.voice_id,
+        help="Enter the ElevenLabs voice identifier for this Episode.",
+    )
     refresh_source = st.checkbox("Check for updated article content")
     narration_key = f"{url.strip()}:{strategy.value}"
     narration_preflight_ready = (
@@ -75,11 +82,15 @@ def main() -> None:
         if not url.strip():
             st.warning("Please enter a blog URL")
             return
+        if not voice_id.strip():
+            st.warning("Please enter a Voice ID")
+            return
         try:
             _generate(
                 url,
                 settings,
                 strategy,
+                voice_id=voice_id.strip(),
                 refresh_source=refresh_source,
                 narration_confirmed=narration_confirmed,
             )
