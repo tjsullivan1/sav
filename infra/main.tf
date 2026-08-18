@@ -17,7 +17,7 @@ resource "azuread_application_federated_identity_credential" "github_actions_pla
   description    = "Allows read-only Terraform plans from pull requests."
   audiences      = ["api://AzureADTokenExchange"]
   issuer         = "https://token.actions.githubusercontent.com"
-  subject        = "repo:${var.github_repository}:pull_request"
+  subject        = "${var.github_oidc_subject_prefix}:pull_request"
 }
 
 resource "azuread_application" "github_actions_deploy" {
@@ -34,7 +34,7 @@ resource "azuread_application_federated_identity_credential" "github_actions_dep
   description    = "Reserves main-branch federation for a later deployment workflow."
   audiences      = ["api://AzureADTokenExchange"]
   issuer         = "https://token.actions.githubusercontent.com"
-  subject        = "repo:${var.github_repository}:ref:refs/heads/main"
+  subject        = "${var.github_oidc_subject_prefix}:ref:refs/heads/main"
 }
 
 resource "azurerm_role_assignment" "github_actions_plan_production_reader" {

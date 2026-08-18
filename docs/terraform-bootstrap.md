@@ -90,6 +90,19 @@ identity has Reader on the production resource group and Storage Blob Data Reade
 account, so it cannot change Azure. The reserved main-branch deployment identity has Contributor on
 the production resource group and Storage Blob Data Contributor on the state account.
 
+## GitHub OIDC subject
+
+This repository emits an immutable-ID subject prefix:
+
+```text
+repo:tjsullivan1@191369/sav@1334625838
+```
+
+Terraform uses it to configure Entra federated credentials. If GitHub Actions reports
+`AADSTS700213`, compare the `subject claim` in the workflow log with this value. Update
+`github_oidc_subject_prefix` in `infra/variables.tf` only when GitHub emits a different subject,
+then run the local `terraform apply` again.
+
 ## Configure GitHub Actions
 
 Copy the three Terraform outputs and state identifiers into **Settings > Secrets and variables >
