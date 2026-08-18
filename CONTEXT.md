@@ -27,6 +27,16 @@ Where Episodes are kept and looked up once produced, addressed by the Episode Re
 produced them. An Episode found in the store is served rather than generated again.
 _Avoid_: cache, storage, bucket, library
 
+**Generation Job**:
+A durable request to create an Episode. It records the lifecycle of the work from submission to a
+terminal outcome.
+_Avoid_: task, process, request, run
+
+**Job Status**:
+The current listener-visible lifecycle state of a Generation Job: queued, retrieving,
+awaiting confirmation, synthesizing, stitching, completed, failed, or cancelled.
+_Avoid_: progress, stage, state machine
+
 **Script**:
 The text that gets narrated to produce an Episode.
 _Avoid_: summary, transcript, text, copy

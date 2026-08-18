@@ -1,90 +1,79 @@
-# Plan
+# Roadmap
 
-The near-term roadmap for Blog to Podcast. Terms used here (Article, Episode, Script, Script
-Strategy, Episode Request, Episode Store) are defined in [`../CONTEXT.md`](../CONTEXT.md).
-Decisions behind these choices are recorded in [`adr/`](./adr).
+The Blog to Podcast roadmap. Domain terms are defined in [`../CONTEXT.md`](../CONTEXT.md), and
+hard-to-reverse decisions are recorded in [`adr/`](./adr).
 
-## Phase 1 — local excellence
+## Phase 1 — local excellence (complete)
 
-Phase one is deliberately local-only. No cloud resources, no deployment. The goal is a tool that
-is genuinely pleasant to run on one machine, structured so that phase two is re-wiring rather
-than rewriting.
+The local Streamlit tool generates Summary and Narration Episodes through a UI-independent
+workflow. It retrieves Articles with Firecrawl, stitches long Narration audio with ffmpeg, retains
+local Episode revisions, and asks for confirmation before expensive Narration work. Local
+configuration, compose verification, documentation, and CI are aligned with this personal-use
+workflow.
 
-### 1. Prune inherited scaffolding
+## Phase 2 — cloud and asynchronous generation
 
-Remove `.platform-mode/`, `.github/prompts/`, `.github/instructions/`, and `utils/`. These came
-from a web-application starter template and describe an architecture we are no longer building —
-they mandate AKS and name Docker Hub as the container registry. Stale standards that contradict
-the actual design are worse than no standards.
+Phase 2 deploys the personal tool as a one-user Azure service without changing the core Episode
+generation model.
 
-Reduce CI to lint and test. The `build-and-push` job depends on organisation variables created by
-the bootstrap script being deleted, and pushes to a registry no infrastructure code describes.
-It returns in phase two alongside the Terraform that creates the registry.
+### Foundation and delivery
 
-### 2. Configuration
+- Deploy one parameterized production stack in Canada Central. Local compose remains the
+  pre-production environment.
+- Bootstrap protected Azure Storage Terraform state once with a documented Azure CLI procedure.
+  Terraform manages every application resource after that boundary.
+- Terraform owns the Azure resources and dedicated Entra application registrations. One-time
+  directory permissions and consent are documented prerequisites.
+- Pull requests run checks, build the image, and produce a read-only Terraform plan. Merges to
+  `main` apply Terraform, publish an immutable SHA-tagged image to ACR, and deploy it through
+  GitHub Actions OIDC. CI holds no Azure or provider secrets.
 
-Adopt `pydantic-settings`. Credentials resolve from the environment and an optional `.env` file,
-replacing the hand-written `from_env` and `missing_fields` helpers and giving validation at
-startup rather than empty-string checks. Remove the credential inputs from the Streamlit sidebar.
+### Runtime and identity
 
-Separate credentials from the Episode Request. Credentials are infrastructure and come from the
-environment; the Article, Script Strategy, and Voice are per-run choices supplied by whichever
-entry point is asking.
+- Use Azure Container Apps for three independently deployed roles from one immutable Python image:
+  Streamlit UI, FastAPI API, and queue worker. Split role-specific images only when the compressed
+  image exceeds 500 MiB or scale-from-zero consistently exceeds 30 seconds.
+- Require Entra authentication on the public UI and API, restricted to the owner or an explicit
+  one-member allowlist. The worker has no public ingress.
+- The UI calls the API with its managed identity and a narrow API app role. Direct API clients
+  present Entra user tokens and face the same identity allowlist.
+- Do not add a VNet or private endpoints in phase 2. Use public service endpoints protected by
+  Entra, managed identities, RBAC, HTTPS, and hardened service settings.
+- Terraform provisions a dedicated Azure OpenAI resource and model deployment. Applications use
+  least-privilege managed-identity access rather than an Azure OpenAI API key.
+- Firecrawl and ElevenLabs keys remain Key Vault secrets readable only by the worker identity.
 
-### 3. Core seam
+### Asynchronous Episode generation
 
-Extract `generate_episode(request) -> Episode`. Streamlit becomes a thin caller that handles
-input and display only. Entry points own their own defaults — the planned API will default to
-Narration where the UI does not — but the core always requires an explicit Script Strategy.
+- A `POST` to create an Episode returns `202 Accepted`, a Generation Job identifier, and a status
+  URL. Clients poll status and retrieve completed Episodes through authenticated API routes.
+- Generation Job statuses are `queued`, `retrieving`, `awaiting_confirmation`, `synthesizing`,
+  `stitching`, `completed`, `failed`, and `cancelled`, each with a listener-readable message.
+- Azure Storage Queue delivers work to a queue-scaled worker. Azure Table Storage tracks Generation
+  Jobs and Episode metadata; Blob Storage holds completed audio and generated Scripts.
+- An above-threshold Narration transitions to `awaiting_confirmation` after retrieval and
+  estimation. An explicit confirmation requeues synthesis. Cancellation is permitted until
+  synthesis starts.
+- Allow one active worker and one Episode generation at a time; queue additional requests.
+- Use idempotent at-least-once processing, bounded exponential retries for transient failures,
+  safe terminal errors, and a poison queue for exhausted messages.
+- Start the cloud Episode Store empty. Retain completed Episodes, metadata, and Scripts
+  indefinitely; expire raw source material, temporary artifacts, and failed/cancelled Job records
+  after 30 days.
 
-### 4. Both Script Strategies
+### Observability
 
-Summary already exists as an agno-driven rewrite. Add Narration: scrape the Article, clean the
-result for speech (navigation, code blocks, image captions), and keep it close to the source.
-See [ADR 0001](./adr/0001-two-script-strategies-not-a-length-parameter.md).
+- Instrument API and worker with the Azure Monitor OpenTelemetry distribution. Export traces,
+  metrics, logs, and exceptions to Application Insights/Azure Monitor.
+- Correlate telemetry with Generation Job and Episode identity, never Article text, sensitive URLs,
+  audio, or credentials.
+- Keep Log Analytics data for 30 days. Alert by email on poison-queue messages, repeated worker
+  failures, and unavailable public ingress.
 
-### 5. Chunk and stitch
+## Deferred
 
-Split Scripts at paragraph boundaries into chunks sized to the active text-to-speech model's cap
-(10,000 characters for the multilingual model, 40,000 for the faster ones), synthesize each, and
-stitch the audio into one Episode. See
-[ADR 0002](./adr/0002-chunk-long-scripts-rather-than-constrain-them.md).
-
-### 6. Episode Store
-
-Write Episodes to a local `episodes/` directory addressed by Article, Script Strategy, and Voice.
-Serve from the store on a repeat request rather than re-paying for the scrape, the model, and
-per-character speech synthesis. See [ADR 0003](./adr/0003-episodes-go-through-a-store.md).
-
-### 7. Local development loop
-
-`uv run` is the canonical everyday loop. Repair the devcontainer so it installs `uv` and reflects
-this project rather than the inherited Python and Terraform image. Add a minimal compose file
-whose only job is verifying the container image still works. Rewrite the README to match.
-
-### 8. Tests
-
-Cover chunk boundaries, Script Strategy selection, and Episode Store hit and miss.
-
-## Phase 2 — cloud and async
-
-Sequenced after phase one, in rough dependency order:
-
-- **Terraform** for Container Apps, container registry, Key Vault, Storage, and Log Analytics,
-  with OIDC and remote state. Azure Container Apps is the target: it hosts the current
-  synchronous app and the later split worker without re-platforming, supports the WebSocket
-  connections Streamlit needs, and scales to zero when idle.
-- **CI/CD restored** — build, push, and deploy on merge, landing with the infrastructure that
-  makes it meaningful.
-- **Azure Storage backed Episode Store**, replacing the local directory implementation.
-- **Entra authentication** in front of the app.
-- **Async split** — move from a synchronous request to request-reply with a background worker,
-  and add the API entry point that defaults to Narration.
-
-## Open questions
-
-- **Stitching mechanism** — ffmpeg in the image for clean joins, versus naive MP3 byte
-  concatenation and the audible seams it can produce.
-- **Does Streamlit survive phase 2**, or does the API plus a different front end replace it?
-- **Cost guardrails on Narration** — whether to estimate and confirm spend before synthesizing a
-  long Article.
+- A second cloud environment, VNet/private endpoints, shared-user capabilities, and source-policy
+  enforcement.
+- Importing the local Episode Store into the cloud store.
+- API percentage-complete estimates, browser-based streaming progress, and a replacement for
+  Streamlit.
