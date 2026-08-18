@@ -1,10 +1,15 @@
 import hashlib
+import json
+import re
+from datetime import UTC, datetime
 
 import pytest
 
 from blog_to_podcast.episodes import (
     Article,
     ArticleRetrievalError,
+    AudioStitchingError,
+    Episode,
     EpisodeGenerationError,
     EpisodeGenerationWorkflow,
     EpisodeRequest,
@@ -30,6 +35,23 @@ class FakeArticleRetriever:
 class FailingArticleRetriever:
     def retrieve(self, article: Article) -> Article:
         raise ArticleRetrievalError("source unavailable")
+
+
+class FailingEpisodeStore:
+    def find(self, request: EpisodeRequest, content_fingerprint: str) -> Episode | None:
+        raise OSError("storage unavailable")
+
+    def find_latest(self, request: EpisodeRequest) -> Episode | None:
+        raise OSError("storage unavailable")
+
+    def next_revision(self, request: EpisodeRequest) -> int:
+        raise OSError("storage unavailable")
+
+    def save(self, request: EpisodeRequest, episode: Episode) -> None:
+        raise OSError("storage unavailable")
+
+    def record_failure(self, request: EpisodeRequest, failure_state: str) -> None:
+        raise OSError("storage unavailable")
 
 
 class FakeSummaryScriptStrategy:
@@ -65,6 +87,17 @@ class FakeAudioStitcher:
     def stitch(self, chunks: list[bytes]) -> bytes:
         self.chunks = chunks
         return b"stitched-" + b"-".join(chunks)
+
+
+class FixedAudioDurationProbe:
+    def duration_seconds(self, audio: bytes) -> float:
+        assert audio == b"audio"
+        return 42.5
+
+
+class FailingAudioDurationProbe:
+    def duration_seconds(self, audio: bytes) -> float:
+        raise AudioStitchingError("duration unavailable")
 
 
 class CountingArticleRetriever(FakeArticleRetriever):
@@ -182,10 +215,89 @@ def test_retains_an_updated_content_revision_with_listener_context(tmp_path) -> 
 
     assert first_episode.revision == 1
     assert revised_episode.revision == 2
-    assert revised_episode.article.title.startswith("UPDATED CONTENT")
-    assert "Revision 2" in revised_episode.article.title
+    assert re.fullmatch(
+        r"UPDATED CONTENT \N{EM DASH} A useful article \(revision 2, \d{4}-\d{2}-\d{2}\)",
+        revised_episode.article.title,
+    )
     assert revised_episode.revision_note == "The source article content changed since revision 1."
     assert store.find(_request(original), original.content_fingerprint) == first_episode
+    revised_metadata = next(
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in (tmp_path / "episodes").glob("*.json")
+        if json.loads(path.read_text(encoding="utf-8"))["revision"] == 2
+    )
+    assert revised_metadata["source"]["title"] == "A useful article"
+
+
+def test_local_store_retains_required_episode_metadata(tmp_path) -> None:
+    store = LocalEpisodeStore(tmp_path / "episodes")
+    request = _request(
+        Article(
+            url="https://example.com/useful-article",
+            title="A useful article",
+            text="Article body.",
+            canonical_url="https://example.com/useful-article",
+            content_fingerprint="article-fingerprint",
+        )
+    )
+    generated_at = datetime(2026, 8, 18, 12, 0, tzinfo=UTC)
+
+    store.save(
+        request,
+        Episode(
+            article=request.article,
+            script="A playable episode.",
+            audio=b"audio",
+            generated_at=generated_at,
+            audio_duration_seconds=42.5,
+        ),
+    )
+
+    metadata = json.loads(next((tmp_path / "episodes").glob("*.json")).read_text(encoding="utf-8"))
+
+    assert metadata["source"]["title"] == "A useful article"
+    assert metadata["source"]["first_seen_at"] == "2026-08-18T12:00:00+00:00"
+    assert metadata["audio"]["format"] == "audio/mpeg"
+    assert metadata["audio"]["duration_seconds"] == 42.5
+
+
+def test_episode_positional_constructor_retains_existing_field_order() -> None:
+    article = Article(url="https://example.com/article")
+    generated_at = datetime(2026, 8, 18, 12, 0, tzinfo=UTC)
+
+    episode = Episode(article, "A script.", b"audio", 2, generated_at, "Updated source.")
+
+    assert episode.revision == 2
+    assert episode.generated_at == generated_at
+    assert episode.revision_note == "Updated source."
+    assert episode.audio_duration_seconds is None
+
+
+def test_generating_an_episode_records_its_audio_duration(tmp_path) -> None:
+    workflow = EpisodeGenerationWorkflow(
+        article_retriever=FakeArticleRetriever(),
+        script_strategies={ScriptStrategy.SUMMARY: FakeSummaryScriptStrategy()},
+        audio_synthesizer=FakeAudioSynthesizer(),
+        audio_duration_probe=FixedAudioDurationProbe(),
+        episode_store=LocalEpisodeStore(tmp_path / "episodes"),
+    )
+
+    episode = workflow.generate(_request())
+
+    assert episode.audio_duration_seconds == 42.5
+
+
+def test_reports_an_actionable_audio_duration_failure(tmp_path) -> None:
+    workflow = EpisodeGenerationWorkflow(
+        article_retriever=FakeArticleRetriever(),
+        script_strategies={ScriptStrategy.SUMMARY: FakeSummaryScriptStrategy()},
+        audio_synthesizer=FakeAudioSynthesizer(),
+        audio_duration_probe=FailingAudioDurationProbe(),
+        episode_store=LocalEpisodeStore(tmp_path / "episodes"),
+    )
+
+    with pytest.raises(EpisodeGenerationError, match="measure the episode audio duration"):
+        workflow.generate(_request())
 
 
 def test_refreshing_unchanged_content_reuses_the_stored_episode(tmp_path) -> None:
@@ -224,6 +336,18 @@ def test_reports_an_actionable_retrieval_failure(tmp_path) -> None:
             audio_synthesizer=FakeAudioSynthesizer(),
             episode_store=LocalEpisodeStore(tmp_path / "episodes"),
         ).generate(_request(Article(url="https://example.com/unavailable")))
+
+
+def test_reports_an_actionable_episode_storage_failure() -> None:
+    workflow = EpisodeGenerationWorkflow(
+        article_retriever=FakeArticleRetriever(),
+        script_strategies={ScriptStrategy.SUMMARY: FakeSummaryScriptStrategy()},
+        audio_synthesizer=FakeAudioSynthesizer(),
+        episode_store=FailingEpisodeStore(),
+    )
+
+    with pytest.raises(EpisodeGenerationError, match="episode storage"):
+        workflow.generate(_request())
 
 
 def test_narration_cleans_article_text_without_summarizing(tmp_path) -> None:

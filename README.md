@@ -26,7 +26,9 @@ synthesis. Configure the threshold and model cap with `NARRATION_CONFIRMATION_TH
 
 ## Local development
 
-Install [uv](https://docs.astral.sh/uv/), then use it for the normal development workflow:
+Install [uv](https://docs.astral.sh/uv/) and
+[FFmpeg](https://ffmpeg.org/download.html) (which provides `ffprobe`), then use them for the normal
+development workflow:
 
 ```powershell
 uv sync
@@ -45,7 +47,7 @@ required variables at startup.
 | `AZURE_OPENAI_API_KEY` | Yes | Azure OpenAI API key |
 | `ELEVENLABS_API_KEY` | Yes | ElevenLabs API key |
 | `FIRECRAWL_API_KEY` | Yes | Firecrawl API key |
-| `ELEVENLABS_VOICE_ID` | No | Voice override |
+| `ELEVENLABS_VOICE_ID` | No | Default Voice ID; the UI can override it for an Episode |
 | `ELEVENLABS_MODEL_ID` | No | Text-to-speech model override |
 
 Run checks with:

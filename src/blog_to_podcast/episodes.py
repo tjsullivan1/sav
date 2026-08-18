@@ -76,6 +76,8 @@ class Episode:
     revision: int = 1
     generated_at: datetime | None = None
     revision_note: str = ""
+    audio_duration_seconds: float | None = None
+    source_title: str = ""
 
 
 class EpisodeGenerationError(RuntimeError):
@@ -142,6 +144,13 @@ class AudioStitcher(Protocol):
 
     def stitch(self, chunks: list[bytes]) -> bytes:
         """Join chunks without changing their order."""
+
+
+class AudioDurationProbe(Protocol):
+    """Measures the duration of playable episode audio."""
+
+    def duration_seconds(self, audio: bytes) -> float:
+        """Return the duration of the supplied audio in seconds."""
 
 
 class EpisodeStore(Protocol):
@@ -235,11 +244,18 @@ class LocalEpisodeStore:
                 "identity": self._source_identity(episode.article),
                 "url": episode.article.url,
                 "canonical_url": episode.article.canonical_url,
+                "title": episode.source_title or episode.article.title,
                 "fingerprint": episode.article.content_fingerprint,
+                "first_seen_at": self._first_seen_at(episode.article, generated_at).isoformat(),
             },
             "request": self._request_metadata(request),
             "script": episode.script,
-            "audio": {"path": audio_path.name, "format": "audio/mpeg", "bytes": len(episode.audio)},
+            "audio": {
+                "path": audio_path.name,
+                "format": "audio/mpeg",
+                "bytes": len(episode.audio),
+                "duration_seconds": episode.audio_duration_seconds,
+            },
             "generation_version": self._generation_version,
             "generated_at": generated_at.isoformat(),
             "revision": episode.revision,
@@ -261,7 +277,9 @@ class LocalEpisodeStore:
                 "identity": self._source_identity(request.article),
                 "url": request.article.url,
                 "canonical_url": request.article.canonical_url,
+                "title": request.article.title,
                 "fingerprint": request.article.content_fingerprint,
+                "first_seen_at": timestamp.isoformat(),
             },
             "request": self._request_metadata(request),
             "script": "",
@@ -292,19 +310,38 @@ class LocalEpisodeStore:
         """Hydrate an episode from its metadata and sibling audio file."""
         article = Article(**metadata["article"])
         audio_path = metadata_path.parent / metadata["audio"]["path"]
+        duration_seconds = metadata["audio"].get("duration_seconds")
         return Episode(
             article=article,
             script=str(metadata["script"]),
             audio=audio_path.read_bytes(),
+            audio_duration_seconds=(
+                float(duration_seconds) if duration_seconds is not None else None
+            ),
             revision=int(metadata["revision"]),
             generated_at=datetime.fromisoformat(str(metadata["generated_at"])),
             revision_note=str(metadata["revision_note"]),
+            source_title=str(metadata["source"].get("title", article.title)),
         )
 
     @staticmethod
     def _source_identity(article: Article) -> str:
         """Return the stable source identity used across content revisions."""
         return article.url.strip()
+
+    def _first_seen_at(self, article: Article, fallback: datetime) -> datetime:
+        """Return the earliest retained timestamp for an article source."""
+        first_seen_times = [fallback]
+        source_identity = self._source_identity(article)
+        for metadata_path in self._metadata_paths():
+            metadata = self._read_metadata(metadata_path)
+            source = metadata.get("source")
+            if not isinstance(source, dict) or source.get("identity") != source_identity:
+                continue
+            timestamp = source.get("first_seen_at", metadata.get("generated_at"))
+            if isinstance(timestamp, str):
+                first_seen_times.append(datetime.fromisoformat(timestamp))
+        return min(first_seen_times)
 
     @staticmethod
     def _request_metadata(request: EpisodeRequest) -> dict[str, str]:
@@ -335,6 +372,7 @@ class EpisodeGenerationWorkflow:
         audio_synthesizer: AudioSynthesizer,
         episode_store: EpisodeStore,
         audio_stitcher: AudioStitcher | None = None,
+        audio_duration_probe: AudioDurationProbe | None = None,
         tts_character_cap: int = 5000,
         narration_confirmation_threshold: int = 10000,
         narration_characters_per_minute: int = 900,
@@ -345,6 +383,7 @@ class EpisodeGenerationWorkflow:
         self._audio_synthesizer = audio_synthesizer
         self._episode_store = episode_store
         self._audio_stitcher = audio_stitcher
+        self._audio_duration_probe = audio_duration_probe
         self._tts_character_cap = tts_character_cap
         self._narration_confirmation_threshold = narration_confirmation_threshold
         self._narration_characters_per_minute = narration_characters_per_minute
@@ -357,9 +396,9 @@ class EpisodeGenerationWorkflow:
     def _generate(self, request: EpisodeRequest) -> Episode:
         """Generate an episode while serializing local revision allocation."""
         if request.article.content_fingerprint:
-            stored_episode = self._episode_store.find(request, request.article.content_fingerprint)
+            stored_episode = self._find_stored_episode(request, request.article.content_fingerprint)
         elif not request.refresh_source:
-            stored_episode = self._episode_store.find_latest(request)
+            stored_episode = self._find_latest_episode(request)
         else:
             stored_episode = None
         if stored_episode is not None:
@@ -371,12 +410,12 @@ class EpisodeGenerationWorkflow:
             else:
                 article = self._article_retriever.retrieve(request.article)
         except ArticleRetrievalError as exc:
-            self._episode_store.record_failure(request, "article_retrieval")
+            self._record_storage_failure(request, "article_retrieval")
             raise EpisodeGenerationError(
                 "Could not retrieve the article. Confirm the URL is public and available."
             ) from exc
 
-        stored_episode = self._episode_store.find(request, article.content_fingerprint)
+        stored_episode = self._find_stored_episode(request, article.content_fingerprint)
         if stored_episode is not None:
             return stored_episode
 
@@ -389,7 +428,7 @@ class EpisodeGenerationWorkflow:
         try:
             script = strategy.create_script(article)
         except ScriptCreationError as exc:
-            self._episode_store.record_failure(request, "script_creation")
+            self._record_storage_failure(request, "script_creation")
             raise EpisodeGenerationError("Could not create the episode script.") from exc
 
         if (
@@ -415,19 +454,29 @@ class EpisodeGenerationWorkflow:
                 else b"".join(audio_chunks)
             )
         except (AudioGenerationError, AudioStitchingError) as exc:
-            self._episode_store.record_failure(request, "audio_synthesis")
+            self._record_storage_failure(request, "audio_synthesis")
             raise EpisodeGenerationError("Could not synthesize the episode audio.") from exc
 
         if not audio:
-            self._episode_store.record_failure(request, "empty_audio")
+            self._record_storage_failure(request, "empty_audio")
             raise EpisodeGenerationError("Audio synthesis returned no playable audio.")
-        revision = self._episode_store.next_revision(request)
+        try:
+            audio_duration_seconds = (
+                self._audio_duration_probe.duration_seconds(audio)
+                if self._audio_duration_probe is not None
+                else None
+            )
+        except AudioStitchingError as exc:
+            self._record_storage_failure(request, "audio_duration")
+            raise EpisodeGenerationError("Could not measure the episode audio duration.") from exc
+        revision = self._next_revision(request)
         revision_note = ""
+        source_title = article.title
         if revision > 1:
             date = datetime.now(UTC).date().isoformat()
             article = Article(
                 url=article.url,
-                title=f"UPDATED CONTENT - Revision {revision} ({date}): {article.title}",
+                title=f"UPDATED CONTENT \N{EM DASH} {article.title} (revision {revision}, {date})",
                 text=article.text,
                 canonical_url=article.canonical_url,
                 content_fingerprint=article.content_fingerprint,
@@ -437,12 +486,51 @@ class EpisodeGenerationWorkflow:
             article=article,
             script=script,
             audio=audio,
+            audio_duration_seconds=audio_duration_seconds,
             revision=revision,
             generated_at=datetime.now(UTC),
             revision_note=revision_note,
+            source_title=source_title,
         )
-        self._episode_store.save(request, episode)
+        self._save_episode(request, episode)
         return episode
+
+    def _find_stored_episode(
+        self, request: EpisodeRequest, content_fingerprint: str
+    ) -> Episode | None:
+        """Find a matching Episode while translating local storage errors."""
+        try:
+            return self._episode_store.find(request, content_fingerprint)
+        except OSError as exc:
+            raise EpisodeGenerationError("Could not access the local episode storage.") from exc
+
+    def _find_latest_episode(self, request: EpisodeRequest) -> Episode | None:
+        """Find the latest Episode while translating local storage errors."""
+        try:
+            return self._episode_store.find_latest(request)
+        except OSError as exc:
+            raise EpisodeGenerationError("Could not access the local episode storage.") from exc
+
+    def _record_storage_failure(self, request: EpisodeRequest, failure_state: str) -> None:
+        """Record a workflow failure while translating local storage errors."""
+        try:
+            self._episode_store.record_failure(request, failure_state)
+        except OSError as exc:
+            raise EpisodeGenerationError("Could not access the local episode storage.") from exc
+
+    def _next_revision(self, request: EpisodeRequest) -> int:
+        """Allocate a revision while translating local storage errors."""
+        try:
+            return self._episode_store.next_revision(request)
+        except OSError as exc:
+            raise EpisodeGenerationError("Could not access the local episode storage.") from exc
+
+    def _save_episode(self, request: EpisodeRequest, episode: Episode) -> None:
+        """Persist an Episode while translating local storage errors."""
+        try:
+            self._episode_store.save(request, episode)
+        except OSError as exc:
+            raise EpisodeGenerationError("Could not access the local episode storage.") from exc
 
 
 class FirecrawlArticleRetriever:
@@ -598,6 +686,44 @@ class FfmpegAudioStitcher:
         return audio
 
 
+class FfmpegAudioDurationProbe:
+    """Measure MP3 duration with ffprobe."""
+
+    def __init__(self, executable: str = "ffprobe") -> None:
+        """Initialize the probe with the ffprobe executable name or path."""
+        self._executable = executable
+
+    def duration_seconds(self, audio: bytes) -> float:
+        """Return the duration of an MP3 payload in seconds."""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            audio_path = Path(temporary_directory) / "episode.mp3"
+            audio_path.write_bytes(audio)
+            try:
+                result = subprocess.run(
+                    [
+                        self._executable,
+                        "-v",
+                        "error",
+                        "-show_entries",
+                        "format=duration",
+                        "-of",
+                        "default=noprint_wrappers=1:nokey=1",
+                        str(audio_path),
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                duration_seconds = float(result.stdout.strip())
+            except (OSError, subprocess.CalledProcessError, ValueError) as exc:
+                raise AudioStitchingError(
+                    "ffprobe could not measure the episode audio duration."
+                ) from exc
+        if duration_seconds <= 0:
+            raise AudioStitchingError("ffprobe reported an invalid episode audio duration.")
+        return duration_seconds
+
+
 class ElevenLabsAudioSynthesizer:
     """Synthesize episode audio through ElevenLabs."""
 
@@ -637,6 +763,7 @@ def build_episode_workflow(settings: Settings) -> EpisodeGenerationWorkflow:
         audio_synthesizer=ElevenLabsAudioSynthesizer(settings),
         episode_store=LocalEpisodeStore(Path(".sav") / "episodes"),
         audio_stitcher=FfmpegAudioStitcher(),
+        audio_duration_probe=FfmpegAudioDurationProbe(),
         tts_character_cap=settings.tts_character_cap,
         narration_confirmation_threshold=settings.narration_confirmation_threshold,
         narration_characters_per_minute=settings.narration_characters_per_minute,
@@ -648,6 +775,7 @@ def generate_episode(
     settings: Settings,
     script_strategy: ScriptStrategy,
     *,
+    voice_id: str | None = None,
     refresh_source: bool = False,
     narration_confirmed: bool = False,
 ) -> Episode:
@@ -657,7 +785,7 @@ def generate_episode(
         EpisodeRequest(
             article=Article(url=url),
             script_strategy=script_strategy,
-            voice=Voice(id=settings.voice_id, model_id=settings.tts_model_id),
+            voice=Voice(id=voice_id or settings.voice_id, model_id=settings.tts_model_id),
             refresh_source=refresh_source,
             narration_confirmed=narration_confirmed,
         )
