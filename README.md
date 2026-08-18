@@ -4,6 +4,13 @@ Blog to Podcast is a local Streamlit tool that turns an eligible public article 
 conversational audio summary. Firecrawl retrieves the article, Azure OpenAI (through
 [agno](https://github.com/agno-agi/agno)) writes the summary, and ElevenLabs synthesizes the audio.
 
+## Episode generation
+
+The UI delegates episode creation to the UI-independent `EpisodeGenerationWorkflow`. An
+`EpisodeRequest` carries the article, script strategy, and voice selection, while credentials stay
+in runtime configuration. For Summary Episodes, Firecrawl retrieves normalized article content,
+agno/Azure OpenAI writes the conversational script, and ElevenLabs synthesizes playable audio.
+
 ## Local development
 
 Install [uv](https://docs.astral.sh/uv/), then use it for the normal development workflow:
