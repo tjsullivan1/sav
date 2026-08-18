@@ -15,6 +15,7 @@ def test_pull_request_delivery_uses_oidc_and_plan_only() -> None:
     assert "client-id: ${{ vars.AZURE_CLIENT_ID }}" in workflow
     assert "tenant-id: ${{ vars.AZURE_TENANT_ID }}" in workflow
     assert "subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}" in workflow
+    assert '-backend-config="key=${{ vars.TF_STATE_KEY }}"' in workflow
     assert "terraform plan -input=false -lock=false -out=tfplan" in workflow
     assert "terraform apply" not in workflow
 
