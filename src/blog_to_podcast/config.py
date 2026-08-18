@@ -8,6 +8,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 DEFAULT_VOICE_ID = "JBFqnCBsd6RMkjVDRZzb"
 DEFAULT_TTS_MODEL = "eleven_multilingual_v2"
 MAX_SUMMARY_CHARS = 2000
+DEFAULT_TTS_CHARACTER_CAP = 5000
+DEFAULT_NARRATION_CONFIRMATION_THRESHOLD = 10000
+DEFAULT_NARRATION_CHARACTERS_PER_MINUTE = 900
 
 
 class Settings(BaseSettings):
@@ -48,6 +51,24 @@ class Settings(BaseSettings):
         default=DEFAULT_TTS_MODEL,
         description="ElevenLabs TTS model id.",
         validation_alias="ELEVENLABS_MODEL_ID",
+    )
+    tts_character_cap: int = Field(
+        default=DEFAULT_TTS_CHARACTER_CAP,
+        ge=1,
+        description="Maximum characters accepted by the active text-to-speech model.",
+        validation_alias="ELEVENLABS_TTS_CHARACTER_CAP",
+    )
+    narration_confirmation_threshold: int = Field(
+        default=DEFAULT_NARRATION_CONFIRMATION_THRESHOLD,
+        ge=0,
+        description="Narration character count that requires confirmation before synthesis.",
+        validation_alias="NARRATION_CONFIRMATION_THRESHOLD",
+    )
+    narration_characters_per_minute: int = Field(
+        default=DEFAULT_NARRATION_CHARACTERS_PER_MINUTE,
+        ge=1,
+        description="Estimated spoken characters per minute for Narration preflight.",
+        validation_alias="NARRATION_CHARACTERS_PER_MINUTE",
     )
 
     @classmethod

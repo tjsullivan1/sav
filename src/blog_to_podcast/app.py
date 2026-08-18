@@ -7,15 +7,32 @@ import logging
 import streamlit as st
 
 from blog_to_podcast.config import Settings
-from blog_to_podcast.episodes import generate_summary_episode
+from blog_to_podcast.episodes import (
+    NarrationConfirmationRequiredError,
+    ScriptStrategy,
+    generate_episode,
+)
 
 logger = logging.getLogger(__name__)
 
 
-def _generate(url: str, settings: Settings, *, refresh_source: bool) -> None:
-    """Generate and render a Summary Episode."""
+def _generate(
+    url: str,
+    settings: Settings,
+    script_strategy: ScriptStrategy,
+    *,
+    refresh_source: bool,
+    narration_confirmed: bool,
+) -> None:
+    """Generate and render an Episode."""
     with st.spinner("Scraping blog and generating podcast..."):
-        episode = generate_summary_episode(url.strip(), settings, refresh_source=refresh_source)
+        episode = generate_episode(
+            url.strip(),
+            settings,
+            script_strategy,
+            refresh_source=refresh_source,
+            narration_confirmed=narration_confirmed,
+        )
 
     st.success("Podcast ready! 🎧")
     st.subheader(episode.article.title)
@@ -34,17 +51,48 @@ def main() -> None:
 
     settings = Settings.from_env()
     url = st.text_input("Enter Blog URL:", "")
+    strategy = ScriptStrategy(
+        st.selectbox(
+            "Script strategy",
+            options=[strategy.value for strategy in ScriptStrategy],
+            format_func=str.title,
+        )
+    )
     refresh_source = st.checkbox("Check for updated article content")
+    narration_key = f"{url.strip()}:{strategy.value}"
+    narration_preflight_ready = (
+        st.session_state.get("narration_preflight_key") == narration_key
+        and strategy is ScriptStrategy.NARRATION
+    )
+    narration_confirmed = False
+    if narration_preflight_ready:
+        st.warning(str(st.session_state["narration_preflight_estimate"]))
+        narration_confirmed = st.checkbox(
+            "I confirm this Narration run after reviewing its estimated size and duration."
+        )
 
     if st.button("🎙️ Generate Podcast", disabled=not settings.is_complete):
         if not url.strip():
             st.warning("Please enter a blog URL")
             return
         try:
-            _generate(url, settings, refresh_source=refresh_source)
+            _generate(
+                url,
+                settings,
+                strategy,
+                refresh_source=refresh_source,
+                narration_confirmed=narration_confirmed,
+            )
+        except NarrationConfirmationRequiredError as exc:
+            st.session_state["narration_preflight_key"] = narration_key
+            st.session_state["narration_preflight_estimate"] = str(exc)
+            st.rerun()
         except Exception as exc:  # noqa: BLE001 - surface any failure to the user
             logger.exception("podcast generation failed")
             st.error(f"Error: {exc}")
+        else:
+            st.session_state.pop("narration_preflight_key", None)
+            st.session_state.pop("narration_preflight_estimate", None)
 
     if not settings.is_complete:
         st.info(settings.startup_feedback())

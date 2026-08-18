@@ -5,6 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
+import subprocess
+import tempfile
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -22,7 +25,7 @@ from blog_to_podcast.config import MAX_SUMMARY_CHARS, Settings
 from blog_to_podcast.tts import AudioGenerationError, text_to_speech
 
 logger = logging.getLogger(__name__)
-GENERATION_VERSION = "summary-v1"
+GENERATION_VERSION = "episode-v2"
 _EPISODE_GENERATION_LOCK = Lock()
 
 
@@ -30,6 +33,7 @@ class ScriptStrategy(StrEnum):
     """The available strategies for turning an article into a script."""
 
     SUMMARY = "summary"
+    NARRATION = "narration"
 
 
 @dataclass(frozen=True)
@@ -59,6 +63,7 @@ class EpisodeRequest:
     script_strategy: ScriptStrategy
     voice: Voice
     refresh_source: bool = False
+    narration_confirmed: bool = False
 
 
 @dataclass(frozen=True)
@@ -85,6 +90,30 @@ class ScriptCreationError(RuntimeError):
     """Raised when a script strategy cannot create a usable script."""
 
 
+class AudioStitchingError(RuntimeError):
+    """Raised when synthesized audio chunks cannot be joined into an episode."""
+
+
+@dataclass(frozen=True)
+class NarrationEstimate:
+    """Preflight size and listening-duration estimate for a Narration script."""
+
+    character_count: int
+    listening_minutes: float
+
+
+class NarrationConfirmationRequiredError(RuntimeError):
+    """Raised when a costly Narration run requires explicit user confirmation."""
+
+    def __init__(self, estimate: NarrationEstimate) -> None:
+        """Initialize the confirmation outcome with its user-facing estimate."""
+        super().__init__(
+            f"Narration contains {estimate.character_count:,} characters and is estimated to take "
+            f"{estimate.listening_minutes:.1f} minutes to listen to. Confirm to begin synthesis."
+        )
+        self.estimate = estimate
+
+
 class ArticleRetriever(Protocol):
     """Retrieves normalized article content from an article source."""
 
@@ -106,6 +135,13 @@ class AudioSynthesizer(Protocol):
 
     def synthesize(self, script: str, voice: Voice) -> bytes:
         """Create MP3 audio for the given voice."""
+
+
+class AudioStitcher(Protocol):
+    """Joins separately synthesized audio chunks into one playable episode."""
+
+    def stitch(self, chunks: list[bytes]) -> bytes:
+        """Join chunks without changing their order."""
 
 
 class EpisodeStore(Protocol):
@@ -298,12 +334,20 @@ class EpisodeGenerationWorkflow:
         script_strategies: dict[ScriptStrategy, EpisodeScriptStrategy],
         audio_synthesizer: AudioSynthesizer,
         episode_store: EpisodeStore,
+        audio_stitcher: AudioStitcher | None = None,
+        tts_character_cap: int = 5000,
+        narration_confirmation_threshold: int = 10000,
+        narration_characters_per_minute: int = 900,
     ) -> None:
         """Initialize the workflow with its external collaborators."""
         self._article_retriever = article_retriever
         self._script_strategies = script_strategies
         self._audio_synthesizer = audio_synthesizer
         self._episode_store = episode_store
+        self._audio_stitcher = audio_stitcher
+        self._tts_character_cap = tts_character_cap
+        self._narration_confirmation_threshold = narration_confirmation_threshold
+        self._narration_characters_per_minute = narration_characters_per_minute
 
     def generate(self, request: EpisodeRequest) -> Episode:
         """Generate a playable episode from a request."""
@@ -348,9 +392,29 @@ class EpisodeGenerationWorkflow:
             self._episode_store.record_failure(request, "script_creation")
             raise EpisodeGenerationError("Could not create the episode script.") from exc
 
+        if (
+            request.script_strategy is ScriptStrategy.NARRATION
+            and len(script) > self._narration_confirmation_threshold
+            and not request.narration_confirmed
+        ):
+            raise NarrationConfirmationRequiredError(
+                NarrationEstimate(
+                    character_count=len(script),
+                    listening_minutes=len(script) / self._narration_characters_per_minute,
+                )
+            )
+
+        chunks = split_script_at_paragraph_boundaries(script, self._tts_character_cap)
         try:
-            audio = self._audio_synthesizer.synthesize(script, request.voice)
-        except AudioGenerationError as exc:
+            audio_chunks = [
+                self._audio_synthesizer.synthesize(chunk, request.voice) for chunk in chunks
+            ]
+            audio = (
+                self._audio_stitcher.stitch(audio_chunks)
+                if self._audio_stitcher is not None
+                else b"".join(audio_chunks)
+            )
+        except (AudioGenerationError, AudioStitchingError) as exc:
             self._episode_store.record_failure(request, "audio_synthesis")
             raise EpisodeGenerationError("Could not synthesize the episode audio.") from exc
 
@@ -437,6 +501,103 @@ class SummaryScriptStrategy:
         return script
 
 
+class NarrationScriptStrategy:
+    """Create a near-verbatim article script cleaned for spoken delivery."""
+
+    name = ScriptStrategy.NARRATION
+
+    def create_script(self, article: Article) -> str:
+        """Remove Markdown-only material while retaining the article's substance."""
+        script = re.sub(r"!\[([^\]]*)\]\([^)]*\)", r"\1", article.text)
+        script = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", script)
+        script = re.sub(r"(?m)^#{1,6}\s*", "", script)
+        script = re.sub(r"(?m)^\s*[-*+]\s+", "", script)
+        script = re.sub(r"`([^`]+)`", r"\1", script)
+        script = re.sub(r"(\*\*|__)(.+?)\1", r"\2", script)
+        script = re.sub(r"(?m)^>\s?", "", script)
+        script = re.sub(r"\n{3,}", "\n\n", script).strip()
+        if not script:
+            raise ScriptCreationError("The narration strategy returned an empty script.")
+        return script
+
+
+def split_script_at_paragraph_boundaries(script: str, character_cap: int) -> list[str]:
+    """Split a script within a model cap, preferring whole paragraph boundaries."""
+    if character_cap < 1:
+        raise ValueError("The text-to-speech character cap must be positive.")
+
+    chunks: list[str] = []
+    current = ""
+    for paragraph in (part.strip() for part in script.split("\n\n") if part.strip()):
+        candidate = f"{current}\n\n{paragraph}" if current else paragraph
+        if len(candidate) <= character_cap:
+            current = candidate
+            continue
+        if current:
+            chunks.append(current)
+            current = ""
+        while len(paragraph) > character_cap:
+            boundary = paragraph.rfind(" ", 0, character_cap + 1)
+            boundary = boundary if boundary > 0 else character_cap
+            chunks.append(paragraph[:boundary].strip())
+            paragraph = paragraph[boundary:].strip()
+        current = paragraph
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+class FfmpegAudioStitcher:
+    """Join MP3 chunks with ffmpeg's concat demuxer."""
+
+    def __init__(self, executable: str = "ffmpeg") -> None:
+        """Initialize the stitcher with the ffmpeg executable name or path."""
+        self._executable = executable
+
+    def stitch(self, chunks: list[bytes]) -> bytes:
+        """Create one MP3 from ordered synthesized MP3 chunks."""
+        if not chunks:
+            raise AudioStitchingError("No audio chunks were supplied for stitching.")
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            chunk_paths = []
+            for index, chunk in enumerate(chunks):
+                path = directory / f"chunk-{index}.mp3"
+                path.write_bytes(chunk)
+                chunk_paths.append(path)
+            manifest = directory / "chunks.txt"
+            manifest.write_text(
+                "\n".join(f"file '{path.as_posix()}'" for path in chunk_paths), encoding="utf-8"
+            )
+            output = directory / "episode.mp3"
+            try:
+                subprocess.run(
+                    [
+                        self._executable,
+                        "-y",
+                        "-f",
+                        "concat",
+                        "-safe",
+                        "0",
+                        "-i",
+                        str(manifest),
+                        "-c",
+                        "copy",
+                        str(output),
+                    ],
+                    check=True,
+                    capture_output=True,
+                )
+            except (OSError, subprocess.CalledProcessError) as exc:
+                raise AudioStitchingError(
+                    "ffmpeg could not stitch the synthesized audio chunks."
+                ) from exc
+            audio = output.read_bytes()
+        if not audio:
+            raise AudioStitchingError("ffmpeg produced no stitched audio.")
+        return audio
+
+
 class ElevenLabsAudioSynthesizer:
     """Synthesize episode audio through ElevenLabs."""
 
@@ -453,8 +614,8 @@ class ElevenLabsAudioSynthesizer:
         return text_to_speech(script, settings, client=self._client)
 
 
-def build_summary_episode_workflow(settings: Settings) -> EpisodeGenerationWorkflow:
-    """Build the configured workflow for a Summary Episode."""
+def build_episode_workflow(settings: Settings) -> EpisodeGenerationWorkflow:
+    """Build the configured workflow for Summary and Narration Episodes."""
     agent = Agent(
         name="Summary Script Writer",
         model=OpenAIChat(
@@ -469,22 +630,47 @@ def build_summary_episode_workflow(settings: Settings) -> EpisodeGenerationWorkf
     )
     return EpisodeGenerationWorkflow(
         article_retriever=FirecrawlArticleRetriever(settings.firecrawl_api_key),
-        script_strategies={ScriptStrategy.SUMMARY: SummaryScriptStrategy(agent)},
+        script_strategies={
+            ScriptStrategy.SUMMARY: SummaryScriptStrategy(agent),
+            ScriptStrategy.NARRATION: NarrationScriptStrategy(),
+        },
         audio_synthesizer=ElevenLabsAudioSynthesizer(settings),
         episode_store=LocalEpisodeStore(Path(".sav") / "episodes"),
+        audio_stitcher=FfmpegAudioStitcher(),
+        tts_character_cap=settings.tts_character_cap,
+        narration_confirmation_threshold=settings.narration_confirmation_threshold,
+        narration_characters_per_minute=settings.narration_characters_per_minute,
     )
+
+
+def generate_episode(
+    url: str,
+    settings: Settings,
+    script_strategy: ScriptStrategy,
+    *,
+    refresh_source: bool = False,
+    narration_confirmed: bool = False,
+) -> Episode:
+    """Generate an Episode through the core workflow."""
+    workflow = build_episode_workflow(settings)
+    return workflow.generate(
+        EpisodeRequest(
+            article=Article(url=url),
+            script_strategy=script_strategy,
+            voice=Voice(id=settings.voice_id, model_id=settings.tts_model_id),
+            refresh_source=refresh_source,
+            narration_confirmed=narration_confirmed,
+        )
+    )
+
+
+def build_summary_episode_workflow(settings: Settings) -> EpisodeGenerationWorkflow:
+    """Build the configured workflow, retained for Summary caller compatibility."""
+    return build_episode_workflow(settings)
 
 
 def generate_summary_episode(
     url: str, settings: Settings, *, refresh_source: bool = False
 ) -> Episode:
     """Generate a Summary Episode through the core workflow."""
-    workflow = build_summary_episode_workflow(settings)
-    return workflow.generate(
-        EpisodeRequest(
-            article=Article(url=url),
-            script_strategy=ScriptStrategy.SUMMARY,
-            voice=Voice(id=settings.voice_id, model_id=settings.tts_model_id),
-            refresh_source=refresh_source,
-        )
-    )
+    return generate_episode(url, settings, ScriptStrategy.SUMMARY, refresh_source=refresh_source)

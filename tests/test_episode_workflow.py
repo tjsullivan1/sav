@@ -9,6 +9,8 @@ from blog_to_podcast.episodes import (
     EpisodeGenerationWorkflow,
     EpisodeRequest,
     LocalEpisodeStore,
+    NarrationConfirmationRequiredError,
+    NarrationScriptStrategy,
     ScriptStrategy,
     Voice,
 )
@@ -46,6 +48,25 @@ class FakeAudioSynthesizer:
         return b"audio"
 
 
+class RecordingAudioSynthesizer(FakeAudioSynthesizer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.scripts: list[str] = []
+
+    def synthesize(self, script: str, voice: Voice) -> bytes:
+        self.scripts.append(script)
+        return super().synthesize(script, voice)
+
+
+class FakeAudioStitcher:
+    def __init__(self) -> None:
+        self.chunks: list[bytes] = []
+
+    def stitch(self, chunks: list[bytes]) -> bytes:
+        self.chunks = chunks
+        return b"stitched-" + b"-".join(chunks)
+
+
 class CountingArticleRetriever(FakeArticleRetriever):
     def __init__(self) -> None:
         self.calls = 0
@@ -64,11 +85,31 @@ class CountingSummaryScriptStrategy(FakeSummaryScriptStrategy):
         return super().create_script(article)
 
 
+class CountingNarrationScriptStrategy(NarrationScriptStrategy):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def create_script(self, article: Article) -> str:
+        self.calls += 1
+        return super().create_script(article)
+
+
 def _request(article: Article | None = None) -> EpisodeRequest:
     return EpisodeRequest(
         article=article or Article(url="https://example.com/useful-article"),
         script_strategy=ScriptStrategy.SUMMARY,
         voice=Voice(id="host-voice"),
+    )
+
+
+def _narration_request(
+    article: Article | None = None, *, narration_confirmed: bool = False
+) -> EpisodeRequest:
+    return EpisodeRequest(
+        article=article or Article(url="https://example.com/useful-article"),
+        script_strategy=ScriptStrategy.NARRATION,
+        voice=Voice(id="host-voice"),
+        narration_confirmed=narration_confirmed,
     )
 
 
@@ -183,3 +224,152 @@ def test_reports_an_actionable_retrieval_failure(tmp_path) -> None:
             audio_synthesizer=FakeAudioSynthesizer(),
             episode_store=LocalEpisodeStore(tmp_path / "episodes"),
         ).generate(_request(Article(url="https://example.com/unavailable")))
+
+
+def test_narration_cleans_article_text_without_summarizing(tmp_path) -> None:
+    article = Article(
+        url="https://example.com/audio",
+        title="Audio article",
+        text=(
+            "## Heading\n\nRead more at [Example](https://example.com). "
+            "Keep `x > 0`, S_0, and 2 * 3.\n\nKeep this paragraph."
+        ),
+        canonical_url="https://example.com/audio",
+        content_fingerprint=hashlib.sha256(b"audio").hexdigest(),
+    )
+    workflow = EpisodeGenerationWorkflow(
+        article_retriever=FakeArticleRetriever(),
+        script_strategies={ScriptStrategy.NARRATION: NarrationScriptStrategy()},
+        audio_synthesizer=FakeAudioSynthesizer(),
+        episode_store=LocalEpisodeStore(tmp_path / "episodes"),
+    )
+
+    episode = workflow.generate(_narration_request(article))
+
+    assert episode.script == (
+        "Heading\n\nRead more at Example. Keep x > 0, S_0, and 2 * 3.\n\nKeep this paragraph."
+    )
+
+
+def test_narration_splits_at_paragraph_boundaries_and_stitches_chunks(tmp_path) -> None:
+    article = Article(
+        url="https://example.com/long",
+        title="Long article",
+        text="First paragraph.\n\nSecond paragraph.\n\nThird paragraph.",
+        canonical_url="https://example.com/long",
+        content_fingerprint=hashlib.sha256(b"long").hexdigest(),
+    )
+    synthesizer = RecordingAudioSynthesizer()
+    stitcher = FakeAudioStitcher()
+    workflow = EpisodeGenerationWorkflow(
+        article_retriever=FakeArticleRetriever(),
+        script_strategies={ScriptStrategy.NARRATION: NarrationScriptStrategy()},
+        audio_synthesizer=synthesizer,
+        audio_stitcher=stitcher,
+        episode_store=LocalEpisodeStore(tmp_path / "episodes"),
+        tts_character_cap=35,
+    )
+
+    episode = workflow.generate(_narration_request(article))
+
+    assert synthesizer.scripts == ["First paragraph.\n\nSecond paragraph.", "Third paragraph."]
+    assert stitcher.chunks == [b"audio", b"audio"]
+    assert episode.audio == b"stitched-audio-audio"
+
+
+def test_expensive_narration_requires_confirmation_before_audio_synthesis(tmp_path) -> None:
+    article = Article(
+        url="https://example.com/expensive",
+        title="Expensive article",
+        text="A sufficiently long article.",
+        canonical_url="https://example.com/expensive",
+        content_fingerprint=hashlib.sha256(b"expensive").hexdigest(),
+    )
+    synthesizer = FakeAudioSynthesizer()
+    workflow = EpisodeGenerationWorkflow(
+        article_retriever=FakeArticleRetriever(),
+        script_strategies={ScriptStrategy.NARRATION: NarrationScriptStrategy()},
+        audio_synthesizer=synthesizer,
+        episode_store=LocalEpisodeStore(tmp_path / "episodes"),
+        narration_confirmation_threshold=10,
+        narration_characters_per_minute=10,
+    )
+
+    with pytest.raises(NarrationConfirmationRequiredError) as exc_info:
+        workflow.generate(_narration_request(article))
+
+    assert exc_info.value.estimate.character_count == len(article.text)
+    assert exc_info.value.estimate.listening_minutes == pytest.approx(2.8)
+    assert synthesizer.calls == 0
+
+
+def test_ordinary_narration_does_not_require_confirmation(tmp_path) -> None:
+    article = Article(
+        url="https://example.com/ordinary",
+        title="Ordinary article",
+        text="Short article.",
+        canonical_url="https://example.com/ordinary",
+        content_fingerprint=hashlib.sha256(b"ordinary").hexdigest(),
+    )
+    workflow = EpisodeGenerationWorkflow(
+        article_retriever=FakeArticleRetriever(),
+        script_strategies={ScriptStrategy.NARRATION: NarrationScriptStrategy()},
+        audio_synthesizer=FakeAudioSynthesizer(),
+        episode_store=LocalEpisodeStore(tmp_path / "episodes"),
+        narration_confirmation_threshold=100,
+    )
+
+    assert workflow.generate(_narration_request(article)).audio == b"audio"
+
+
+def test_reuses_a_matching_narration_episode_without_invoking_external_services(tmp_path) -> None:
+    store = LocalEpisodeStore(tmp_path / "episodes")
+    retriever = CountingArticleRetriever()
+    strategy = CountingNarrationScriptStrategy()
+    synthesizer = FakeAudioSynthesizer()
+    workflow = EpisodeGenerationWorkflow(
+        article_retriever=retriever,
+        script_strategies={ScriptStrategy.NARRATION: strategy},
+        audio_synthesizer=synthesizer,
+        episode_store=store,
+    )
+
+    first_episode = workflow.generate(_narration_request())
+    second_episode = workflow.generate(_narration_request())
+
+    assert second_episode == first_episode
+    assert retriever.calls == 1
+    assert strategy.calls == 1
+    assert synthesizer.calls == 1
+
+
+def test_narration_retains_an_updated_content_revision(tmp_path) -> None:
+    store = LocalEpisodeStore(tmp_path / "episodes")
+    original = Article(
+        url="https://example.com/narration",
+        title="Narration article",
+        text="Original article body.",
+        canonical_url="https://example.com/narration",
+        content_fingerprint=hashlib.sha256(b"narration-original").hexdigest(),
+    )
+    revised = Article(
+        url=original.url,
+        title=original.title,
+        text="Revised article body.",
+        canonical_url=original.canonical_url,
+        content_fingerprint=hashlib.sha256(b"narration-revised").hexdigest(),
+    )
+    workflow = EpisodeGenerationWorkflow(
+        article_retriever=FakeArticleRetriever(),
+        script_strategies={ScriptStrategy.NARRATION: NarrationScriptStrategy()},
+        audio_synthesizer=FakeAudioSynthesizer(),
+        episode_store=store,
+    )
+
+    first_episode = workflow.generate(_narration_request(original))
+    revised_episode = workflow.generate(_narration_request(revised))
+
+    assert first_episode.revision == 1
+    assert revised_episode.revision == 2
+    assert revised_episode.article.title.startswith("UPDATED CONTENT")
+    assert revised_episode.revision_note == "The source article content changed since revision 1."
