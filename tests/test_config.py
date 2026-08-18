@@ -32,9 +32,10 @@ ENV_VARS = [
 
 
 @pytest.fixture(autouse=True)
-def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def _clean_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     for name in ENV_VARS:
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.chdir(tmp_path)
 
 
 def test_defaults_are_empty_and_incomplete() -> None:
