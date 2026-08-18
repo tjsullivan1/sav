@@ -13,36 +13,6 @@ from blog_to_podcast.tts import text_to_speech
 logger = logging.getLogger(__name__)
 
 
-def _sidebar_settings() -> Settings:
-    """Render the credential sidebar, pre-filled from the environment."""
-    defaults = Settings.from_env()
-    st.sidebar.header("🔑 API Configuration")
-
-    return Settings(
-        azure_openai_base_url=st.sidebar.text_input(
-            "Azure OpenAI v1 Base URL",
-            value=defaults.azure_openai_base_url,
-            placeholder="https://<resource-name>.openai.azure.com/openai/v1/",
-        ),
-        azure_openai_deployment=st.sidebar.text_input(
-            "Azure OpenAI Deployment Name",
-            value=defaults.azure_openai_deployment,
-            placeholder="gpt-4o",
-        ),
-        azure_openai_api_key=st.sidebar.text_input(
-            "Azure OpenAI API Key", value=defaults.azure_openai_api_key, type="password"
-        ),
-        elevenlabs_api_key=st.sidebar.text_input(
-            "ElevenLabs API Key", value=defaults.elevenlabs_api_key, type="password"
-        ),
-        firecrawl_api_key=st.sidebar.text_input(
-            "Firecrawl API Key", value=defaults.firecrawl_api_key, type="password"
-        ),
-        voice_id=defaults.voice_id,
-        tts_model_id=defaults.tts_model_id,
-    )
-
-
 def _generate(url: str, settings: Settings) -> None:
     """Run the scrape → summarize → narrate pipeline and render the results."""
     with st.spinner("Scraping blog and generating podcast..."):
@@ -61,7 +31,7 @@ def main() -> None:
     st.set_page_config(page_title="📰 ➡️ 🎙️ Blog to Podcast", page_icon="🎙️")
     st.title("📰 ➡️ 🎙️ Blog to Podcast Agent")
 
-    settings = _sidebar_settings()
+    settings = Settings.from_env()
     url = st.text_input("Enter Blog URL:", "")
 
     if st.button("🎙️ Generate Podcast", disabled=not settings.is_complete):
@@ -75,9 +45,7 @@ def main() -> None:
             st.error(f"Error: {exc}")
 
     if not settings.is_complete:
-        st.info(
-            "Add the missing credentials in the sidebar: " + ", ".join(settings.missing_fields())
-        )
+        st.info(settings.startup_feedback())
 
 
 main()

@@ -1,48 +1,59 @@
-"""Runtime configuration for the blog-to-podcast app.
-
-Settings are resolved from environment variables and may be overridden at
-runtime by values entered in the Streamlit sidebar.
-"""
+"""Runtime configuration for the local blog-to-podcast app."""
 
 from __future__ import annotations
 
-import os
-
-from pydantic import BaseModel, Field
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_VOICE_ID = "JBFqnCBsd6RMkjVDRZzb"
 DEFAULT_TTS_MODEL = "eleven_multilingual_v2"
 MAX_SUMMARY_CHARS = 2000
 
 
-class Settings(BaseModel):
+class Settings(BaseSettings):
     """Credentials and model settings needed to generate a podcast."""
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        populate_by_name=True,
+    )
 
     azure_openai_base_url: str = Field(
         default="",
         description="Azure OpenAI v1 base URL, e.g. https://<resource>.openai.azure.com/openai/v1/",
+        validation_alias="AZURE_OPENAI_BASE_URL",
     )
     azure_openai_deployment: str = Field(
-        default="", description="Azure OpenAI chat model deployment name."
+        default="",
+        description="Azure OpenAI chat model deployment name.",
+        validation_alias="AZURE_OPENAI_DEPLOYMENT",
     )
-    azure_openai_api_key: str = Field(default="", description="Azure OpenAI API key.")
-    elevenlabs_api_key: str = Field(default="", description="ElevenLabs API key.")
-    firecrawl_api_key: str = Field(default="", description="Firecrawl API key.")
-    voice_id: str = Field(default=DEFAULT_VOICE_ID, description="ElevenLabs voice identifier.")
-    tts_model_id: str = Field(default=DEFAULT_TTS_MODEL, description="ElevenLabs TTS model id.")
+    azure_openai_api_key: str = Field(
+        default="", description="Azure OpenAI API key.", validation_alias="AZURE_OPENAI_API_KEY"
+    )
+    elevenlabs_api_key: str = Field(
+        default="", description="ElevenLabs API key.", validation_alias="ELEVENLABS_API_KEY"
+    )
+    firecrawl_api_key: str = Field(
+        default="", description="Firecrawl API key.", validation_alias="FIRECRAWL_API_KEY"
+    )
+    voice_id: str = Field(
+        default=DEFAULT_VOICE_ID,
+        description="ElevenLabs voice identifier.",
+        validation_alias="ELEVENLABS_VOICE_ID",
+    )
+    tts_model_id: str = Field(
+        default=DEFAULT_TTS_MODEL,
+        description="ElevenLabs TTS model id.",
+        validation_alias="ELEVENLABS_MODEL_ID",
+    )
 
     @classmethod
     def from_env(cls) -> Settings:
-        """Build settings from environment variables, falling back to empty strings."""
-        return cls(
-            azure_openai_base_url=os.getenv("AZURE_OPENAI_BASE_URL", ""),
-            azure_openai_deployment=os.getenv("AZURE_OPENAI_DEPLOYMENT", ""),
-            azure_openai_api_key=os.getenv("AZURE_OPENAI_API_KEY", ""),
-            elevenlabs_api_key=os.getenv("ELEVENLABS_API_KEY", ""),
-            firecrawl_api_key=os.getenv("FIRECRAWL_API_KEY", ""),
-            voice_id=os.getenv("ELEVENLABS_VOICE_ID", DEFAULT_VOICE_ID),
-            tts_model_id=os.getenv("ELEVENLABS_MODEL_ID", DEFAULT_TTS_MODEL),
-        )
+        """Build settings from environment variables and an optional local ``.env`` file."""
+        return cls()
 
     def missing_fields(self) -> list[str]:
         """Return the human-readable names of required settings that are still empty."""
@@ -54,6 +65,20 @@ class Settings(BaseModel):
             "Firecrawl API Key": self.firecrawl_api_key,
         }
         return [name for name, value in required.items() if not value.strip()]
+
+    def startup_feedback(self) -> str:
+        """Return actionable feedback when required configuration is incomplete."""
+        missing_variables = {
+            "AZURE_OPENAI_BASE_URL": self.azure_openai_base_url,
+            "AZURE_OPENAI_DEPLOYMENT": self.azure_openai_deployment,
+            "AZURE_OPENAI_API_KEY": self.azure_openai_api_key,
+            "ELEVENLABS_API_KEY": self.elevenlabs_api_key,
+            "FIRECRAWL_API_KEY": self.firecrawl_api_key,
+        }
+        missing = [name for name, value in missing_variables.items() if not value.strip()]
+        if not missing:
+            return ""
+        return f"Set the following required environment variables: {', '.join(missing)}."
 
     @property
     def is_complete(self) -> bool:
