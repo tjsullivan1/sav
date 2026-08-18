@@ -6,6 +6,9 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -36,3 +39,50 @@ jobs:
 
       - name: Build container image
         run: docker build --tag blog-to-podcast:ci .
+
+  terraform-plan:
+    if: >-
+      github.event_name == 'pull_request' &&
+      vars.AZURE_CLIENT_ID != '' &&
+      vars.AZURE_TENANT_ID != '' &&
+      vars.AZURE_SUBSCRIPTION_ID != '' &&
+      vars.TF_STATE_RESOURCE_GROUP != '' &&
+      vars.TF_STATE_STORAGE_ACCOUNT != '' &&
+      vars.TF_STATE_CONTAINER != ''
+    needs: [test, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TF_VAR_tf_state_resource_group_name: ${{ vars.TF_STATE_RESOURCE_GROUP }}
+      TF_VAR_tf_state_storage_account_name: ${{ vars.TF_STATE_STORAGE_ACCOUNT }}
+    defaults:
+      run:
+        working-directory: infra
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: hashicorp/setup-terraform@v3
+
+      - name: Authenticate to Azure with GitHub OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Initialize Terraform state
+        run: >
+          terraform init -input=false
+          -backend-config="resource_group_name=${{ vars.TF_STATE_RESOURCE_GROUP }}"
+          -backend-config="storage_account_name=${{ vars.TF_STATE_STORAGE_ACCOUNT }}"
+          -backend-config="container_name=${{ vars.TF_STATE_CONTAINER }}"
+          -backend-config="key=production.tfstate"
+          -backend-config="use_azuread_auth=true"
+
+      - name: Validate Terraform
+        run: terraform validate
+
+      - name: Create read-only Terraform plan
+        run: terraform plan -input=false -lock=false -out=tfplan

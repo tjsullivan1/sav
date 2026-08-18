@@ -7,6 +7,7 @@ dist/
 venv/
 .pytest_cache/
 .ruff_cache/
+.terraform/
 .coverage
 htmlcov/
 .env
