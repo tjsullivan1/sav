@@ -10,7 +10,7 @@ def test_pull_request_delivery_uses_oidc_and_plan_only() -> None:
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
 
     assert "id-token: write" in workflow
-    assert "azure/login@v2" in workflow
+    assert "azure/login@v3" in workflow
     assert "vars.AZURE_CLIENT_ID != ''" in workflow
     assert "client-id: ${{ vars.AZURE_CLIENT_ID }}" in workflow
     assert "tenant-id: ${{ vars.AZURE_TENANT_ID }}" in workflow
