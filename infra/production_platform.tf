@@ -313,7 +313,7 @@ resource "azurerm_container_app" "api" {
 
       env {
         name  = "APPROVED_USER_SUBJECTS"
-        value = coalesce(var.owner_object_id, "")
+        value = var.owner_object_id == null ? "" : var.owner_object_id
       }
 
       command = ["uvicorn"]
