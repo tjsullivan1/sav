@@ -48,9 +48,7 @@ class FakeTableStorage:
         self.entities.append(saved)
 
     def query(self, table: str, partition_key: str) -> list[dict[str, object]]:
-        return [
-            dict(entity) for entity in self.entities if entity["PartitionKey"] == partition_key
-        ]
+        return [dict(entity) for entity in self.entities if entity["PartitionKey"] == partition_key]
 
     def get(self, table: str, partition_key: str, row_key: str) -> dict[str, object] | None:
         return next(
