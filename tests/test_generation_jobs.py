@@ -1,10 +1,18 @@
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
 
 from blog_to_podcast.api import create_app
-from blog_to_podcast.episodes import Article, Episode, EpisodeRequest, ScriptStrategy, Voice
+from blog_to_podcast.episodes import (
+    Article,
+    Episode,
+    EpisodeRequest,
+    NarrationEstimate,
+    ScriptStrategy,
+    Voice,
+)
 from blog_to_podcast.jobs import (
     AccessDeniedError,
     GenerationJobService,
@@ -30,18 +38,30 @@ class FakeRepository:
         self.jobs[job.id] = job
         return job
 
-    def transition(self, job_id, expected_statuses, status, message, updated_at, confirmed=None):
+    def transition(
+        self,
+        job_id,
+        expected_statuses,
+        status,
+        message,
+        updated_at,
+        confirmed=None,
+        request=None,
+        narration_estimate=None,
+    ):
         job = self.jobs.get(job_id)
         if job is None or job.status not in expected_statuses:
             return None
-        updated = job.__class__(
-            id=job.id,
-            request=job.request,
+        updated = replace(
+            job,
+            request=job.request if request is None else request,
             status=status,
             message=message,
-            created_at=job.created_at,
             updated_at=updated_at,
             confirmed=job.confirmed if confirmed is None else confirmed,
+            narration_estimate=(
+                job.narration_estimate if narration_estimate is None else narration_estimate
+            ),
         )
         self.jobs[job_id] = updated
         return updated
@@ -73,8 +93,10 @@ class FakeProvider:
     def find_existing(self, request):
         return None
 
-    def requires_confirmation(self, request):
-        return request.script_strategy is ScriptStrategy.NARRATION
+    def confirmation_estimate(self, request):
+        if request.script_strategy is ScriptStrategy.NARRATION:
+            return NarrationEstimate(character_count=120, listening_minutes=0.1)
+        return None
 
     def synthesize(self, request):
         return b"audio"
@@ -141,6 +163,60 @@ def test_narration_job_waits_for_confirmation_then_completes() -> None:
     assert completed.status is GenerationJobStatus.COMPLETED
     assert store.get(job.id) == Episode(article=_article(), script="A script.", audio=b"audio")
     assert queue.job_ids == [job.id, job.id]
+
+
+def test_narration_confirmation_preserves_the_retrieved_article_and_estimate() -> None:
+    class RetrievingNarrationProvider(FakeProvider):
+        def __init__(self) -> None:
+            self.retrievals = 0
+            self.synthesis_calls = 0
+            self.synthesized_request = None
+
+        def retrieve(self, request):
+            self.retrievals += 1
+            return replace(
+                request,
+                article=Article(
+                    url=request.article.url,
+                    title="Retrieved Article",
+                    text="Retrieved Article text.",
+                    canonical_url=request.article.url,
+                    content_fingerprint="retrieved-fingerprint",
+                ),
+            )
+
+        def synthesize(self, request):
+            self.synthesis_calls += 1
+            self.synthesized_request = request
+            return super().synthesize(request)
+
+        def stitch(self, audio):
+            return Episode(
+                article=self.synthesized_request.article, script="A script.", audio=audio
+            )
+
+    provider = RetrievingNarrationProvider()
+    service, _, store = _service(provider)
+    job = service.submit(_request(ScriptStrategy.NARRATION), Identity.user("owner"))
+
+    awaiting_confirmation = service.process(job.id)
+
+    assert awaiting_confirmation.status is GenerationJobStatus.AWAITING_CONFIRMATION
+    assert awaiting_confirmation.request.article.content_fingerprint == "retrieved-fingerprint"
+    assert awaiting_confirmation.narration_estimate == NarrationEstimate(
+        character_count=120, listening_minutes=0.1
+    )
+    assert provider.synthesis_calls == 0
+
+    confirmed = service.confirm(job.id, Identity.user("owner"))
+    completed = service.process(confirmed.id)
+
+    assert completed.status is GenerationJobStatus.COMPLETED
+    assert provider.retrievals == 1
+    assert provider.synthesis_calls == 1
+    assert store.get(job.id) == Episode(
+        article=awaiting_confirmation.request.article, script="A script.", audio=b"audio"
+    )
 
 
 def test_cancelling_before_synthesis_prevents_worker_processing() -> None:
@@ -259,3 +335,22 @@ def test_api_returns_accepted_job_and_a_pollable_status_url() -> None:
     assert body["message"] == "Episode request queued."
     poll = client.get(body["status_url"], headers={"Authorization": "Bearer owner-token"})
     assert poll.status_code == 200
+
+
+def test_api_returns_the_narration_estimate_when_confirmation_is_required() -> None:
+    class OwnerIdentityResolver:
+        def resolve(self, authorization):
+            return Identity.user("owner")
+
+    service, _, _ = _service()
+    submitted = service.submit(_request(ScriptStrategy.NARRATION), Identity.user("owner"))
+    service.process(submitted.id)
+    client = TestClient(create_app(service, OwnerIdentityResolver()))
+
+    response = client.get(f"/v1/generation-jobs/{submitted.id}")
+
+    assert response.status_code == 200
+    assert response.json()["estimate"] == {
+        "character_count": 120,
+        "listening_minutes": 0.1,
+    }

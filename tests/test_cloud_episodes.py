@@ -1,7 +1,13 @@
 from datetime import UTC, datetime
 
 from blog_to_podcast.cloud import CloudEpisodeStore, CloudGenerationProvider
-from blog_to_podcast.episodes import Article, Episode, EpisodeRequest, ScriptStrategy, Voice
+from blog_to_podcast.episodes import (
+    Article,
+    Episode,
+    EpisodeRequest,
+    ScriptStrategy,
+    Voice,
+)
 
 
 class FakeBlobStorage:
@@ -59,6 +65,24 @@ class FakeSummaryStrategy:
 class FakeAudioSynthesizer:
     def synthesize(self, script: str, voice: Voice) -> bytes:
         return script.encode()
+
+
+class RecordingAudioSynthesizer(FakeAudioSynthesizer):
+    def __init__(self) -> None:
+        self.scripts: list[str] = []
+
+    def synthesize(self, script: str, voice: Voice) -> bytes:
+        self.scripts.append(script)
+        return super().synthesize(script, voice)
+
+
+class FakeAudioStitcher:
+    def __init__(self) -> None:
+        self.chunks: list[bytes] = []
+
+    def stitch(self, chunks: list[bytes]) -> bytes:
+        self.chunks = chunks
+        return b"stitched-" + b"-".join(chunks)
 
 
 def _request() -> EpisodeRequest:
@@ -146,3 +170,41 @@ def test_cloud_provider_reuses_a_matching_source_and_retains_changed_source_revi
     assert provider.find_existing(matching_request) == first_episode
     assert changed_episode.revision == 2
     assert changed_episode.revision_note == "The source article content changed since revision 1."
+
+
+def test_cloud_narration_estimates_then_chunks_stitches_and_retains_one_episode() -> None:
+    class NarrationStrategy:
+        name = ScriptStrategy.NARRATION
+
+        def create_script(self, article: Article) -> str:
+            return "First paragraph.\n\nSecond paragraph.\n\nThird paragraph."
+
+    store = CloudEpisodeStore(blobs=FakeBlobStorage(), tables=FakeTableStorage())
+    synthesizer = RecordingAudioSynthesizer()
+    stitcher = FakeAudioStitcher()
+    provider = CloudGenerationProvider(
+        article_retriever=ChangingArticleRetriever(),
+        script_strategies={ScriptStrategy.NARRATION: NarrationStrategy()},
+        audio_synthesizer=synthesizer,
+        episode_store=store,
+        audio_stitcher=stitcher,
+        tts_character_cap=35,
+        narration_confirmation_threshold=10,
+        narration_characters_per_minute=10,
+    )
+    request = EpisodeRequest(
+        article=Article(url="https://example.com/article"),
+        script_strategy=ScriptStrategy.NARRATION,
+        voice=Voice(id="voice"),
+    )
+
+    prepared = provider.retrieve(request)
+    estimate = provider.confirmation_estimate(prepared)
+    episode = provider.stitch(provider.synthesize(prepared))
+
+    assert estimate is not None
+    assert estimate.character_count == 53
+    assert synthesizer.scripts == ["First paragraph.\n\nSecond paragraph.", "Third paragraph."]
+    assert stitcher.chunks == [b"First paragraph.\n\nSecond paragraph.", b"Third paragraph."]
+    assert episode.audio == b"stitched-First paragraph.\n\nSecond paragraph.-Third paragraph."
+    assert provider.find_existing(prepared) == episode

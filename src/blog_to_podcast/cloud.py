@@ -27,6 +27,7 @@ from blog_to_podcast.episodes import (
     EpisodeRequest,
     EpisodeScriptStrategy,
     EpisodeStore,
+    NarrationEstimate,
     ScriptCreationError,
     ScriptStrategy,
     Voice,
@@ -191,6 +192,9 @@ class AzureGenerationJobRepository:
             "created_at": job.created_at.isoformat(),
             "updated_at": job.updated_at.isoformat(),
             "confirmed": job.confirmed,
+            "narration_estimate": (
+                asdict(job.narration_estimate) if job.narration_estimate is not None else None
+            ),
         }
 
     @staticmethod
@@ -210,6 +214,11 @@ class AzureGenerationJobRepository:
             created_at=datetime.fromisoformat(str(entity["created_at"])),
             updated_at=datetime.fromisoformat(str(entity["updated_at"])),
             confirmed=bool(entity["confirmed"]),
+            narration_estimate=(
+                NarrationEstimate(**dict(entity["narration_estimate"]))
+                if entity.get("narration_estimate") is not None
+                else None
+            ),
         )
 
 
@@ -281,6 +290,8 @@ class CloudGenerationProvider:
         audio_stitcher: AudioStitcher | None = None,
         audio_duration_probe: AudioDurationProbe | None = None,
         tts_character_cap: int = 5000,
+        narration_confirmation_threshold: int = 10000,
+        narration_characters_per_minute: int = 900,
     ) -> None:
         """Initialize a private worker provider from external generation collaborators."""
         self._article_retriever = article_retriever
@@ -290,6 +301,8 @@ class CloudGenerationProvider:
         self._audio_stitcher = audio_stitcher
         self._audio_duration_probe = audio_duration_probe
         self._tts_character_cap = tts_character_cap
+        self._narration_confirmation_threshold = narration_confirmation_threshold
+        self._narration_characters_per_minute = narration_characters_per_minute
         self._pending: dict[bytes, tuple[EpisodeRequest, str]] = {}
 
     def retrieve(self, request: EpisodeRequest) -> EpisodeRequest:
@@ -308,9 +321,25 @@ class CloudGenerationProvider:
             raise GenerationProviderError("Could not access the cloud Episode Store.") from exc
         return None
 
-    def requires_confirmation(self, request: EpisodeRequest) -> bool:
-        """Let queue processing run directly; the API currently submits Summary jobs."""
-        return False
+    def confirmation_estimate(self, request: EpisodeRequest) -> NarrationEstimate | None:
+        """Estimate retrieved Narration before expensive audio synthesis."""
+        if request.script_strategy is not ScriptStrategy.NARRATION:
+            return None
+        strategy = self._script_strategies.get(request.script_strategy)
+        if strategy is None:
+            raise GenerationProviderError(
+                f"No Script Strategy is configured for '{request.script_strategy.value}'."
+            )
+        try:
+            script = strategy.create_script(request.article)
+        except ScriptCreationError as exc:
+            raise GenerationProviderError("Could not prepare the Narration script.") from exc
+        if len(script) <= self._narration_confirmation_threshold:
+            return None
+        return NarrationEstimate(
+            character_count=len(script),
+            listening_minutes=len(script) / self._narration_characters_per_minute,
+        )
 
     def synthesize(self, request: EpisodeRequest) -> bytes:
         """Create audio from the configured Script Strategy and retain context for stitching."""

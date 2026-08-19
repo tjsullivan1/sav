@@ -19,6 +19,13 @@ from blog_to_podcast.jobs import (
 )
 
 
+class NarrationEstimateBody(BaseModel):
+    """Listener-readable Narration estimate attached to a waiting Job."""
+
+    character_count: int
+    listening_minutes: float
+
+
 class IdentityResolver(Protocol):
     """Resolves a verified Entra bearer token to a caller Identity."""
 
@@ -53,6 +60,7 @@ class GenerationJobBody(BaseModel):
     status_url: str
     created_at: datetime
     updated_at: datetime
+    estimate: NarrationEstimateBody | None = None
 
     @classmethod
     def from_domain(cls, job: GenerationJob) -> GenerationJobBody:
@@ -64,6 +72,14 @@ class GenerationJobBody(BaseModel):
             status_url=f"/v1/generation-jobs/{job.id}",
             created_at=job.created_at,
             updated_at=job.updated_at,
+            estimate=(
+                NarrationEstimateBody(
+                    character_count=job.narration_estimate.character_count,
+                    listening_minutes=job.narration_estimate.listening_minutes,
+                )
+                if job.narration_estimate is not None
+                else None
+            ),
         )
 
 

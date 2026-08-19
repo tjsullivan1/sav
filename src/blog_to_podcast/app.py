@@ -63,6 +63,13 @@ def _render_cloud_job(api: GenerationJobApi) -> None:
 
     st.subheader("Generation Job")
     st.info(f"{job.status.replace('_', ' ').title()}: {job.message}")
+    if job.status == "awaiting_confirmation" and job.estimate is not None:
+        character_count = int(job.estimate["character_count"])
+        listening_minutes = float(job.estimate["listening_minutes"])
+        st.warning(
+            f"Narration contains {character_count:,} characters and is estimated to take "
+            f"{listening_minutes:.1f} minutes to listen to."
+        )
     if st.button("Refresh Job Status"):
         try:
             st.session_state["generation_job"] = api.get(job.id)

@@ -44,6 +44,7 @@ class GenerationJobView:
     status: str
     message: str
     status_url: str
+    estimate: dict[str, int | float] | None = None
 
 
 class GenerationJobApiError(RuntimeError):
@@ -153,6 +154,7 @@ class GenerationJobApi:
                 status=payload["status"],
                 message=payload["message"],
                 status_url=payload["status_url"],
+                estimate=payload.get("estimate"),
             )
         except (KeyError, TypeError, json.JSONDecodeError) as exc:
             raise GenerationJobApiError(
