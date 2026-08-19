@@ -3,6 +3,7 @@
 from pathlib import Path
 
 WORKFLOW_PATH = Path(".github/workflows/ci.yml")
+TERRAFORM_PATH = Path("infra/main.tf")
 
 
 def test_pull_request_delivery_uses_oidc_and_plan_only() -> None:
@@ -28,3 +29,11 @@ def test_delivery_workflow_does_not_accept_stored_azure_credentials() -> None:
     assert "credentials:" not in workflow
     assert "client-secret:" not in workflow
     assert "secrets.AZURE_" not in workflow
+
+
+def test_plan_identity_has_read_only_directory_and_state_permissions() -> None:
+    """Require the permissions Terraform's PR plan uses to read its configuration."""
+    terraform = TERRAFORM_PATH.read_text(encoding="utf-8")
+
+    assert 'role_definition_name = "Reader"' in terraform
+    assert "azuread_directory_role_assignment" in terraform

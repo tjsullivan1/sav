@@ -11,6 +11,8 @@ Run these steps as the person who will perform the initial apply. That identity 
 - **Contributor** on the target subscription to create the state resource group and storage account.
 - **Storage Blob Data Contributor** on the state storage account to use the Azure AD-backed Terraform
   backend.
+- **Privileged Role Administrator** to activate and assign the GitHub plan identity the Directory
+  Readers role. This is needed only for bootstrap Terraform applies.
 - A directory role or delegated Microsoft Graph permission that permits application registration
   management (for example, Application Administrator or Cloud Application Administrator).
 - **User Access Administrator** or **Owner** on the production resource group and state storage
@@ -87,8 +89,22 @@ terraform apply -input=false `
 The apply creates the production resource group, separate plan and deployment Entra applications
 and service principals, GitHub federated credentials, and Azure role assignments. The pull-request
 identity has Reader on the production resource group and Storage Blob Data Reader on the state
-account, so it cannot change Azure. The reserved main-branch deployment identity has Contributor on
-the production resource group and Storage Blob Data Contributor on the state account.
+account, plus Reader on the state account's management plane and Directory Readers in Entra. It
+cannot change Azure. The reserved main-branch deployment identity has Contributor on the production
+resource group and Storage Blob Data Contributor on the state account.
+
+## GitHub OIDC subject
+
+This repository emits an immutable-ID subject prefix:
+
+```text
+repo:tjsullivan1@191369/sav@1334625838
+```
+
+Terraform uses it to configure Entra federated credentials. If GitHub Actions reports
+`AADSTS700213`, compare the `subject claim` in the workflow log with this value. Update
+`github_oidc_subject_prefix` in `infra/variables.tf` only when GitHub emits a different subject,
+then run the local `terraform apply` again.
 
 ## Configure GitHub Actions
 

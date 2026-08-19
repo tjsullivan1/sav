@@ -10,10 +10,10 @@ variable "resource_group_name" {
   default     = "rg-blog-to-podcast-prod"
 }
 
-variable "github_repository" {
-  description = "GitHub repository allowed to request Azure OIDC tokens."
+variable "github_oidc_subject_prefix" {
+  description = "GitHub Actions OIDC subject prefix emitted for this repository."
   type        = string
-  default     = "tjsullivan1/sav"
+  default     = "repo:tjsullivan1@191369/sav@1334625838"
 }
 
 variable "tf_state_resource_group_name" {
