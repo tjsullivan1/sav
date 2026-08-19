@@ -1,13 +1,19 @@
 from datetime import UTC, datetime
 
-from blog_to_podcast.cloud import CloudEpisodeStore, CloudGenerationProvider
+from blog_to_podcast.cloud import (
+    AzureGenerationJobRepository,
+    CloudEpisodeStore,
+    CloudGenerationProvider,
+)
 from blog_to_podcast.episodes import (
     Article,
     Episode,
     EpisodeRequest,
+    NarrationEstimate,
     ScriptStrategy,
     Voice,
 )
+from blog_to_podcast.jobs import GenerationJob, GenerationJobStatus
 
 
 class FakeBlobStorage:
@@ -116,6 +122,47 @@ def test_cloud_episode_store_retains_and_retrieves_complete_episode_artifacts() 
     restored = store.find(request, "fingerprint-v1")
     assert restored == episode
     assert list(blobs.blobs.values()) == [b"mp3-bytes", b"A concise script."]
+
+
+def test_cloud_job_repository_persists_the_prepared_narration_request_and_estimate() -> None:
+    tables = FakeTableStorage()
+    repository = AzureGenerationJobRepository(tables)
+    initial = GenerationJob(
+        id="job-1",
+        request=_request(),
+        status=GenerationJobStatus.RETRIEVING,
+        message="Retrieving the Article.",
+        created_at=datetime(2026, 8, 19, 15, 0, tzinfo=UTC),
+        updated_at=datetime(2026, 8, 19, 15, 0, tzinfo=UTC),
+    )
+    prepared_request = EpisodeRequest(
+        article=Article(
+            url=initial.request.article.url,
+            title="Retrieved Article",
+            text="Retrieved Article text.",
+            canonical_url=initial.request.article.url,
+            content_fingerprint="retrieved-fingerprint",
+        ),
+        script_strategy=ScriptStrategy.NARRATION,
+        voice=initial.request.voice,
+    )
+    estimate = NarrationEstimate(character_count=120, listening_minutes=0.1)
+    repository.create(initial)
+
+    awaiting_confirmation = repository.transition(
+        initial.id,
+        {GenerationJobStatus.RETRIEVING},
+        GenerationJobStatus.AWAITING_CONFIRMATION,
+        "Confirmation is required before synthesis.",
+        initial.updated_at,
+        request=prepared_request,
+        narration_estimate=estimate,
+    )
+
+    assert awaiting_confirmation is not None
+    assert awaiting_confirmation.request == prepared_request
+    assert awaiting_confirmation.narration_estimate == estimate
+    assert repository.get(initial.id) == awaiting_confirmation
 
 
 def test_cloud_episode_store_retains_changed_source_as_a_new_revision() -> None:

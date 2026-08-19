@@ -158,6 +158,8 @@ class AzureGenerationJobRepository:
         message: str,
         updated_at: datetime,
         confirmed: bool | None = None,
+        request: EpisodeRequest | None = None,
+        narration_estimate: NarrationEstimate | None = None,
     ) -> GenerationJob | None:
         """Persist a valid lifecycle transition."""
         job = self.get(job_id)
@@ -169,6 +171,10 @@ class AzureGenerationJobRepository:
             message=message,
             updated_at=updated_at,
             confirmed=job.confirmed if confirmed is None else confirmed,
+            request=job.request if request is None else request,
+            narration_estimate=(
+                job.narration_estimate if narration_estimate is None else narration_estimate
+            ),
         )
         return self.save(updated)
 
