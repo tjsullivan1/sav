@@ -86,12 +86,18 @@ terraform apply -input=false `
   -var="tf_state_storage_account_name=<globally-unique-storage-account>"
 ```
 
-The apply creates the production resource group, separate plan and deployment Entra applications
-and service principals, GitHub federated credentials, and Azure role assignments. The pull-request
-identity has Reader on the production resource group and Storage Blob Data Reader on the state
-account, plus Reader on the state account's management plane and Directory Readers in Entra. It
-cannot change Azure. The reserved main-branch deployment identity has Contributor on the production
-resource group and Storage Blob Data Contributor on the state account.
+The apply creates the production resource group, Container Apps environment, Container Registry,
+Key Vault, Storage, Application Insights, Log Analytics, Azure OpenAI deployment, separate
+production UI/API Entra applications, GitHub Entra applications and service principals, and the
+least-privilege role assignments. Before applying, choose globally unique values for the production
+Storage account, Key Vault, Container Registry, and Azure OpenAI account names when their defaults
+are unavailable. Set `owner_object_id` to the Microsoft Entra object ID permitted to access the
+Episode API. Firecrawl and ElevenLabs values are never Terraform variables: create those named Key
+Vault secrets after the initial apply. The pull-request identity has Reader on the production
+resource group and Storage Blob Data Reader on the state account, plus Reader on the state account's
+management plane and Directory Readers in Entra. It cannot change Azure. The reserved main-branch
+deployment identity has Contributor on the production resource group and Storage Blob Data
+Contributor on the state account.
 
 ## GitHub OIDC subject
 

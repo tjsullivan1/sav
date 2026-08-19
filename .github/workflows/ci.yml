@@ -40,6 +40,22 @@ jobs:
       - name: Build container image
         run: docker build --tag blog-to-podcast:ci .
 
+  terraform-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: hashicorp/setup-terraform@v4
+
+      - name: Initialize Terraform providers without remote state
+        run: terraform init -backend=false -input=false
+
+      - name: Validate secured production plan assertions
+        run: terraform test
+
   terraform-plan:
     if: >-
       github.event_name == 'pull_request' &&
@@ -50,7 +66,7 @@ jobs:
       vars.TF_STATE_STORAGE_ACCOUNT != '' &&
       vars.TF_STATE_CONTAINER != '' &&
       vars.TF_STATE_KEY != ''
-    needs: [test, build]
+    needs: [test, build, terraform-test]
     runs-on: ubuntu-latest
     permissions:
       contents: read
