@@ -51,10 +51,9 @@ variable "api_application_id_uri" {
 }
 
 variable "owner_object_id" {
-  description = "Optional Microsoft Entra object ID allowed to access the public Episode API."
+  description = "Microsoft Entra object ID allowed to access the public UI and Episode API."
   type        = string
-  default     = null
-  nullable    = true
+  nullable    = false
 }
 
 variable "storage_account_name" {

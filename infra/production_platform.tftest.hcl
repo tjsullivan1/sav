@@ -84,7 +84,17 @@ run "provisions_a_single_private_worker_platform" {
   }
 
   assert {
-    condition     = azuread_app_role_assignment.owner_api_access[0].app_role_id != null
+    condition     = azuread_app_role_assignment.owner_api_access.app_role_id != null
     error_message = "The configured owner must receive the API app role."
+  }
+
+  assert {
+    condition = alltrue([
+      azurerm_container_app.ui.template[0].container[0].env[1].name == "GENERATION_API_URL",
+      azurerm_container_app.ui.template[0].container[0].env[2].name == "API_APPLICATION_ID_URI",
+      azurerm_container_app.ui.template[0].container[0].env[3].name == "AZURE_CLIENT_ID",
+      azapi_resource.ui_entra_authentication.body.properties.platform.enabled,
+    ])
+    error_message = "The UI must call the API using its managed identity behind Entra authentication."
   }
 }

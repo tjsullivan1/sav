@@ -12,6 +12,7 @@ from blog_to_podcast.episodes import (
     ScriptStrategy,
     generate_episode,
 )
+from blog_to_podcast.ui import GenerationJobApi, GenerationJobApiError, GenerationJobView
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,54 @@ def _generate(
         st.write(episode.script)
 
 
+def build_generation_job_api(settings: Settings) -> GenerationJobApi:
+    """Build the cloud UI's managed-identity API adapter."""
+    return GenerationJobApi(
+        base_url=settings.generation_api_url,
+        scope=settings.generation_api_scope,
+    )
+
+
+def _render_cloud_job(api: GenerationJobApi) -> None:
+    """Render the current durable Generation Job and its available actions."""
+    job = st.session_state.get("generation_job")
+    if not isinstance(job, GenerationJobView):
+        return
+
+    st.subheader("Generation Job")
+    st.info(f"{job.status.replace('_', ' ').title()}: {job.message}")
+    if st.button("Refresh Job Status"):
+        try:
+            st.session_state["generation_job"] = api.get(job.id)
+            st.rerun()
+        except GenerationJobApiError as exc:
+            st.error(str(exc))
+
+    if job.status == "awaiting_confirmation" and st.button("Confirm synthesis"):
+        try:
+            st.session_state["generation_job"] = api.confirm(job.id)
+            st.rerun()
+        except GenerationJobApiError as exc:
+            st.error(str(exc))
+
+    if job.status in {"queued", "retrieving", "awaiting_confirmation"} and st.button("Cancel Job"):
+        try:
+            st.session_state["generation_job"] = api.cancel(job.id)
+            st.rerun()
+        except GenerationJobApiError as exc:
+            st.error(str(exc))
+
+    if job.status == "completed":
+        try:
+            audio = api.episode(job.id)
+        except GenerationJobApiError as exc:
+            st.error(str(exc))
+        else:
+            st.success("Episode ready!")
+            st.audio(audio, format="audio/mp3")
+            st.download_button("Download Episode", audio, "episode.mp3", "audio/mp3")
+
+
 def main() -> None:
     """Entry point for the Streamlit app."""
     st.set_page_config(page_title="📰 ➡️ 🎙️ Blog to Podcast", page_icon="🎙️")
@@ -77,6 +126,28 @@ def main() -> None:
         narration_confirmed = st.checkbox(
             "I confirm this Narration run after reviewing its estimated size and duration."
         )
+
+    if settings.is_cloud_ui_configured:
+        api = build_generation_job_api(settings)
+        if st.button("🎙️ Generate Episode"):
+            if not url.strip():
+                st.warning("Please enter an Article URL")
+                return
+            if not voice_id.strip():
+                st.warning("Please enter a Voice ID")
+                return
+            try:
+                st.session_state["generation_job"] = api.submit(
+                    article_url=url.strip(),
+                    script_strategy=strategy.value,
+                    voice_id=voice_id.strip(),
+                    refresh_source=refresh_source,
+                )
+                st.rerun()
+            except GenerationJobApiError as exc:
+                st.error(str(exc))
+        _render_cloud_job(api)
+        return
 
     if st.button("🎙️ Generate Podcast", disabled=not settings.is_complete):
         if not url.strip():

@@ -251,10 +251,56 @@ resource "azurerm_container_app" "ui" {
         value = azurerm_application_insights.production.connection_string
       }
 
+      env {
+        name  = "GENERATION_API_URL"
+        value = "https://${azurerm_container_app.api.ingress[0].fqdn}"
+      }
+
+      env {
+        name  = "API_APPLICATION_ID_URI"
+        value = var.api_application_id_uri
+      }
+
+      env {
+        name  = "AZURE_CLIENT_ID"
+        value = azurerm_user_assigned_identity.ui.client_id
+      }
+
     }
 
     min_replicas = 1
     max_replicas = 1
+  }
+}
+
+resource "azapi_resource" "ui_entra_authentication" {
+  type      = "Microsoft.App/containerApps/authConfigs@2024-03-01"
+  parent_id = azurerm_container_app.ui.id
+  name      = "current"
+
+  body = {
+    properties = {
+      globalValidation = {
+        redirectToProvider          = "azureactivedirectory"
+        unauthenticatedClientAction = "RedirectToLoginPage"
+      }
+      identityProviders = {
+        azureActiveDirectory = {
+          enabled           = true
+          isAutoProvisioned = true
+          validation = {
+            defaultAuthorizationPolicy = {
+              allowedPrincipals = {
+                identities = [var.owner_object_id]
+              }
+            }
+          }
+        }
+      }
+      platform = {
+        enabled = true
+      }
+    }
   }
 }
 
@@ -435,8 +481,6 @@ resource "azuread_app_role_assignment" "ui_api_access" {
 }
 
 resource "azuread_app_role_assignment" "owner_api_access" {
-  count = var.owner_object_id == null ? 0 : 1
-
   app_role_id         = local.episode_api_app_role_id
   principal_object_id = var.owner_object_id
   resource_object_id  = azuread_service_principal.episode_api.object_id
