@@ -1,7 +1,19 @@
 from datetime import UTC, datetime
 
-from blog_to_podcast.cloud import CloudEpisodeStore, CloudGenerationProvider
-from blog_to_podcast.episodes import Article, Episode, EpisodeRequest, ScriptStrategy, Voice
+from blog_to_podcast.cloud import (
+    AzureGenerationJobRepository,
+    CloudEpisodeStore,
+    CloudGenerationProvider,
+)
+from blog_to_podcast.episodes import (
+    Article,
+    Episode,
+    EpisodeRequest,
+    NarrationEstimate,
+    ScriptStrategy,
+    Voice,
+)
+from blog_to_podcast.jobs import GenerationJob, GenerationJobStatus
 
 
 class FakeBlobStorage:
@@ -18,8 +30,12 @@ class FakeBlobStorage:
 class FakeTableStorage:
     def __init__(self) -> None:
         self.entities: list[dict[str, object]] = []
+        self._next_etag = 1
 
     def upsert(self, table: str, entity: dict[str, object]) -> None:
+        saved = {key: value for key, value in entity.items() if key != "_etag"}
+        saved["_etag"] = str(self._next_etag)
+        self._next_etag += 1
         self.entities = [
             candidate
             for candidate in self.entities
@@ -27,12 +43,29 @@ class FakeTableStorage:
                 candidate["PartitionKey"],
                 candidate["RowKey"],
             )
-            != (entity["PartitionKey"], entity["RowKey"])
+            != (saved["PartitionKey"], saved["RowKey"])
         ]
-        self.entities.append(entity)
+        self.entities.append(saved)
 
     def query(self, table: str, partition_key: str) -> list[dict[str, object]]:
-        return [entity for entity in self.entities if entity["PartitionKey"] == partition_key]
+        return [dict(entity) for entity in self.entities if entity["PartitionKey"] == partition_key]
+
+    def get(self, table: str, partition_key: str, row_key: str) -> dict[str, object] | None:
+        return next(
+            (
+                dict(entity)
+                for entity in self.entities
+                if entity["PartitionKey"] == partition_key and entity["RowKey"] == row_key
+            ),
+            None,
+        )
+
+    def replace_if_unchanged(self, table: str, entity: dict[str, object]) -> bool:
+        current = self.get(table, str(entity["PartitionKey"]), str(entity["RowKey"]))
+        if current is None or current["_etag"] != entity.get("_etag"):
+            return False
+        self.upsert(table, entity)
+        return True
 
 
 class ChangingArticleRetriever:
@@ -59,6 +92,24 @@ class FakeSummaryStrategy:
 class FakeAudioSynthesizer:
     def synthesize(self, script: str, voice: Voice) -> bytes:
         return script.encode()
+
+
+class RecordingAudioSynthesizer(FakeAudioSynthesizer):
+    def __init__(self) -> None:
+        self.scripts: list[str] = []
+
+    def synthesize(self, script: str, voice: Voice) -> bytes:
+        self.scripts.append(script)
+        return super().synthesize(script, voice)
+
+
+class FakeAudioStitcher:
+    def __init__(self) -> None:
+        self.chunks: list[bytes] = []
+
+    def stitch(self, chunks: list[bytes]) -> bytes:
+        self.chunks = chunks
+        return b"stitched-" + b"-".join(chunks)
 
 
 def _request() -> EpisodeRequest:
@@ -92,6 +143,92 @@ def test_cloud_episode_store_retains_and_retrieves_complete_episode_artifacts() 
     restored = store.find(request, "fingerprint-v1")
     assert restored == episode
     assert list(blobs.blobs.values()) == [b"mp3-bytes", b"A concise script."]
+
+
+def test_cloud_job_repository_persists_the_prepared_narration_request_and_estimate() -> None:
+    tables = FakeTableStorage()
+    repository = AzureGenerationJobRepository(tables)
+    initial = GenerationJob(
+        id="job-1",
+        request=_request(),
+        status=GenerationJobStatus.RETRIEVING,
+        message="Retrieving the Article.",
+        created_at=datetime(2026, 8, 19, 15, 0, tzinfo=UTC),
+        updated_at=datetime(2026, 8, 19, 15, 0, tzinfo=UTC),
+    )
+    prepared_request = EpisodeRequest(
+        article=Article(
+            url=initial.request.article.url,
+            title="Retrieved Article",
+            text="Retrieved Article text.",
+            canonical_url=initial.request.article.url,
+            content_fingerprint="retrieved-fingerprint",
+        ),
+        script_strategy=ScriptStrategy.NARRATION,
+        voice=initial.request.voice,
+    )
+    estimate = NarrationEstimate(character_count=120, listening_minutes=0.1)
+    repository.create(initial)
+
+    awaiting_confirmation = repository.transition(
+        initial.id,
+        {GenerationJobStatus.RETRIEVING},
+        GenerationJobStatus.AWAITING_CONFIRMATION,
+        "Confirmation is required before synthesis.",
+        initial.updated_at,
+        request=prepared_request,
+        narration_estimate=estimate,
+    )
+
+    assert awaiting_confirmation is not None
+    assert awaiting_confirmation.request == prepared_request
+    assert awaiting_confirmation.narration_estimate == estimate
+    assert repository.get(initial.id) == awaiting_confirmation
+
+
+def test_cloud_job_repository_does_not_overwrite_a_concurrent_cancellation() -> None:
+    class CancellationRacingTable(FakeTableStorage):
+        def __init__(self) -> None:
+            super().__init__()
+            self.repository: AzureGenerationJobRepository | None = None
+            self.cancelled = False
+
+        def replace_if_unchanged(self, table: str, entity: dict[str, object]) -> bool:
+            if not self.cancelled:
+                self.cancelled = True
+                assert self.repository is not None
+                self.repository.transition(
+                    str(entity["RowKey"]),
+                    {GenerationJobStatus.QUEUED},
+                    GenerationJobStatus.CANCELLED,
+                    "Episode generation cancelled.",
+                    datetime(2026, 8, 19, 15, 1, tzinfo=UTC),
+                )
+            return super().replace_if_unchanged(table, entity)
+
+    tables = CancellationRacingTable()
+    repository = AzureGenerationJobRepository(tables)
+    tables.repository = repository
+    initial = GenerationJob(
+        id="job-2",
+        request=_request(),
+        status=GenerationJobStatus.QUEUED,
+        message="Episode request queued.",
+        created_at=datetime(2026, 8, 19, 15, 0, tzinfo=UTC),
+        updated_at=datetime(2026, 8, 19, 15, 0, tzinfo=UTC),
+    )
+    repository.create(initial)
+
+    transition = repository.transition(
+        initial.id,
+        {GenerationJobStatus.QUEUED},
+        GenerationJobStatus.RETRIEVING,
+        "Retrieving the Article.",
+        datetime(2026, 8, 19, 15, 1, tzinfo=UTC),
+    )
+
+    assert transition is None
+    assert repository.get(initial.id).status is GenerationJobStatus.CANCELLED  # type: ignore[union-attr]
 
 
 def test_cloud_episode_store_retains_changed_source_as_a_new_revision() -> None:
@@ -146,3 +283,41 @@ def test_cloud_provider_reuses_a_matching_source_and_retains_changed_source_revi
     assert provider.find_existing(matching_request) == first_episode
     assert changed_episode.revision == 2
     assert changed_episode.revision_note == "The source article content changed since revision 1."
+
+
+def test_cloud_narration_estimates_then_chunks_stitches_and_retains_one_episode() -> None:
+    class NarrationStrategy:
+        name = ScriptStrategy.NARRATION
+
+        def create_script(self, article: Article) -> str:
+            return "First paragraph.\n\nSecond paragraph.\n\nThird paragraph."
+
+    store = CloudEpisodeStore(blobs=FakeBlobStorage(), tables=FakeTableStorage())
+    synthesizer = RecordingAudioSynthesizer()
+    stitcher = FakeAudioStitcher()
+    provider = CloudGenerationProvider(
+        article_retriever=ChangingArticleRetriever(),
+        script_strategies={ScriptStrategy.NARRATION: NarrationStrategy()},
+        audio_synthesizer=synthesizer,
+        episode_store=store,
+        audio_stitcher=stitcher,
+        tts_character_cap=35,
+        narration_confirmation_threshold=10,
+        narration_characters_per_minute=10,
+    )
+    request = EpisodeRequest(
+        article=Article(url="https://example.com/article"),
+        script_strategy=ScriptStrategy.NARRATION,
+        voice=Voice(id="voice"),
+    )
+
+    prepared = provider.retrieve(request)
+    estimate = provider.confirmation_estimate(prepared)
+    episode = provider.stitch(provider.synthesize(prepared))
+
+    assert estimate is not None
+    assert estimate.character_count == 53
+    assert synthesizer.scripts == ["First paragraph.\n\nSecond paragraph.", "Third paragraph."]
+    assert stitcher.chunks == [b"First paragraph.\n\nSecond paragraph.", b"Third paragraph."]
+    assert episode.audio == b"stitched-First paragraph.\n\nSecond paragraph.-Third paragraph."
+    assert provider.find_existing(prepared) == episode

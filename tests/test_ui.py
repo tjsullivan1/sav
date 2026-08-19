@@ -34,6 +34,21 @@ class FakeTransport:
                         "status": "awaiting_confirmation",
                         "message": "Confirmation is required before synthesis.",
                         "status_url": "/v1/generation-jobs/job-1",
+                        "estimate": {
+                            "character_count": 12000,
+                            "listening_minutes": 13.3,
+                        },
+                    }
+                ).encode(),
+            ),
+            ApiResponse(
+                status_code=200,
+                body=json.dumps(
+                    {
+                        "id": "job-1",
+                        "status": "queued",
+                        "message": "Confirmation received; synthesis queued.",
+                        "status_url": "/v1/generation-jobs/job-1",
                     }
                 ).encode(),
             ),
@@ -74,16 +89,22 @@ def test_ui_submits_polls_cancels_and_retrieves_an_episode_through_the_api() -> 
         refresh_source=True,
     )
     polled = api.get(submitted.id)
+    confirmed = api.confirm(submitted.id)
     cancelled = api.cancel(submitted.id)
     audio = api.episode(submitted.id)
 
     assert submitted.status == "queued"
     assert polled.message == "Confirmation is required before synthesis."
+    assert polled.estimate is not None
+    assert polled.estimate.character_count == 12000
+    assert polled.estimate.listening_minutes == 13.3
+    assert confirmed.status == "queued"
     assert cancelled.status == "cancelled"
     assert audio == b"mp3-bytes"
     assert [(method, url) for method, url, _, _ in transport.requests] == [
         ("POST", "https://api.example.test/v1/generation-jobs"),
         ("GET", "https://api.example.test/v1/generation-jobs/job-1"),
+        ("POST", "https://api.example.test/v1/generation-jobs/job-1/confirm"),
         ("POST", "https://api.example.test/v1/generation-jobs/job-1/cancel"),
         ("GET", "https://api.example.test/v1/generation-jobs/job-1/episode"),
     ]

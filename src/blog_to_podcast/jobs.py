@@ -8,7 +8,12 @@ from enum import StrEnum
 from typing import Protocol
 from uuid import uuid4
 
-from blog_to_podcast.episodes import Episode, EpisodeGenerationError, EpisodeRequest
+from blog_to_podcast.episodes import (
+    Episode,
+    EpisodeGenerationError,
+    EpisodeRequest,
+    NarrationEstimate,
+)
 
 
 class GenerationJobStatus(StrEnum):
@@ -59,6 +64,7 @@ class GenerationJob:
     created_at: datetime
     updated_at: datetime
     confirmed: bool = False
+    narration_estimate: NarrationEstimate | None = None
 
 
 class GenerationJobRepository(Protocol):
@@ -81,6 +87,8 @@ class GenerationJobRepository(Protocol):
         message: str,
         updated_at: datetime,
         confirmed: bool | None = None,
+        request: EpisodeRequest | None = None,
+        narration_estimate: NarrationEstimate | None = None,
     ) -> GenerationJob | None:
         """Atomically transition a Job only when it remains in an expected status."""
 
@@ -111,8 +119,8 @@ class GenerationProvider(Protocol):
     def find_existing(self, request: EpisodeRequest) -> Episode | None:
         """Return a retained Episode when the request's identity already matches."""
 
-    def requires_confirmation(self, request: EpisodeRequest) -> bool:
-        """Whether the retrieved request needs explicit confirmation."""
+    def confirmation_estimate(self, request: EpisodeRequest) -> NarrationEstimate | None:
+        """Return the confirmation estimate required before synthesis, if any."""
 
     def synthesize(self, request: EpisodeRequest) -> bytes:
         """Synthesize audio for a prepared Episode Request."""
@@ -267,16 +275,27 @@ class GenerationJobService:
             existing_episode = self._provider.find_existing(retrieving.request)
             if existing_episode is not None:
                 return self._complete_existing_episode(retrieving, existing_episode)
-            prepared_request = self._provider.retrieve(retrieving.request)
+            prepared_request = (
+                retrieving.request
+                if retrieving.request.article.content_fingerprint
+                else self._provider.retrieve(retrieving.request)
+            )
             existing_episode = self._provider.find_existing(prepared_request)
             if existing_episode is not None:
                 return self._complete_existing_episode(retrieving, existing_episode)
-            if self._provider.requires_confirmation(prepared_request) and not retrieving.confirmed:
+            narration_estimate = self._provider.confirmation_estimate(prepared_request)
+            if narration_estimate is not None and not retrieving.confirmed:
                 awaiting_confirmation = self._transition(
                     retrieving.id,
                     {GenerationJobStatus.RETRIEVING},
                     status=GenerationJobStatus.AWAITING_CONFIRMATION,
-                    message="Confirmation is required before synthesis.",
+                    message=(
+                        f"Narration contains {narration_estimate.character_count:,} characters and "
+                        f"is estimated to take {narration_estimate.listening_minutes:.1f} minutes "
+                        "to listen to. Confirm to begin synthesis."
+                    ),
+                    request=prepared_request,
+                    narration_estimate=narration_estimate,
                 )
                 return awaiting_confirmation or self._get(retrieving.id)
             synthesizing = self._transition(
@@ -352,6 +371,8 @@ class GenerationJobService:
         status: GenerationJobStatus,
         message: str,
         confirmed: bool | None = None,
+        request: EpisodeRequest | None = None,
+        narration_estimate: NarrationEstimate | None = None,
     ) -> GenerationJob | None:
         """Persist a listener-visible Job Status transition if it is still valid."""
         return self._repository.transition(
@@ -361,4 +382,6 @@ class GenerationJobService:
             message,
             self._clock.now(),
             confirmed,
+            request,
+            narration_estimate,
         )

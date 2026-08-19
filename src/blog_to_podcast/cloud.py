@@ -9,7 +9,9 @@ from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from typing import Protocol
 
-from azure.data.tables import TableServiceClient
+from azure.core import MatchConditions
+from azure.core.exceptions import ResourceModifiedError, ResourceNotFoundError
+from azure.data.tables import TableServiceClient, UpdateMode
 from azure.identity import DefaultAzureCredential
 from azure.storage.blob import BlobServiceClient, ContentSettings
 from azure.storage.queue import QueueClient, QueueServiceClient
@@ -27,6 +29,7 @@ from blog_to_podcast.episodes import (
     EpisodeRequest,
     EpisodeScriptStrategy,
     EpisodeStore,
+    NarrationEstimate,
     ScriptCreationError,
     ScriptStrategy,
     Voice,
@@ -58,6 +61,12 @@ class TableStorage(Protocol):
 
     def query(self, table: str, partition_key: str) -> list[dict[str, object]]:
         """Return entities in a partition."""
+
+    def get(self, table: str, partition_key: str, row_key: str) -> dict[str, object] | None:
+        """Return one entity with its concurrency tag when present."""
+
+    def replace_if_unchanged(self, table: str, entity: dict[str, object]) -> bool:
+        """Replace an entity only when its concurrency tag is still current."""
 
 
 class AzureBlobStorage:
@@ -104,6 +113,33 @@ class AzureTableStorage:
         )
         return [dict(entity) for entity in entities]
 
+    def get(self, table: str, partition_key: str, row_key: str) -> dict[str, object] | None:
+        """Return one entity and its ETag for an optimistic-concurrency update."""
+        try:
+            entity = self._client.get_table_client(table).get_entity(
+                partition_key=partition_key, row_key=row_key
+            )
+        except ResourceNotFoundError:
+            return None
+        return {**dict(entity), "_etag": entity.metadata["etag"]}
+
+    def replace_if_unchanged(self, table: str, entity: dict[str, object]) -> bool:
+        """Replace an entity only if it has not changed since it was read."""
+        etag = entity.get("_etag")
+        if not isinstance(etag, str):
+            return False
+        updated = {key: value for key, value in entity.items() if key != "_etag"}
+        try:
+            self._client.get_table_client(table).update_entity(
+                entity=updated,
+                mode=UpdateMode.REPLACE,
+                etag=etag,
+                match_condition=MatchConditions.IfNotModified,
+            )
+        except ResourceModifiedError:
+            return False
+        return True
+
 
 class AzureGenerationQueue:
     """Storage Queue producer used by the public API."""
@@ -138,11 +174,8 @@ class AzureGenerationJobRepository:
 
     def get(self, job_id: str) -> GenerationJob | None:
         """Return a Generation Job when it exists."""
-        entities = self._tables.query(self._TABLE, self._PARTITION)
-        for entity in entities:
-            if entity["RowKey"] == job_id:
-                return self._job(entity)
-        return None
+        entity = self._tables.get(self._TABLE, self._PARTITION, job_id)
+        return self._job(entity) if entity is not None else None
 
     def save(self, job: GenerationJob) -> GenerationJob:
         """Persist a full Generation Job replacement."""
@@ -157,10 +190,15 @@ class AzureGenerationJobRepository:
         message: str,
         updated_at: datetime,
         confirmed: bool | None = None,
+        request: EpisodeRequest | None = None,
+        narration_estimate: NarrationEstimate | None = None,
     ) -> GenerationJob | None:
         """Persist a valid lifecycle transition."""
-        job = self.get(job_id)
-        if job is None or job.status not in expected_statuses:
+        entity = self._tables.get(self._TABLE, self._PARTITION, job_id)
+        if entity is None:
+            return None
+        job = self._job(entity)
+        if job.status not in expected_statuses:
             return None
         updated = replace(
             job,
@@ -168,8 +206,14 @@ class AzureGenerationJobRepository:
             message=message,
             updated_at=updated_at,
             confirmed=job.confirmed if confirmed is None else confirmed,
+            request=job.request if request is None else request,
+            narration_estimate=(
+                job.narration_estimate if narration_estimate is None else narration_estimate
+            ),
         )
-        return self.save(updated)
+        updated_entity = self._entity(updated)
+        updated_entity["_etag"] = entity["_etag"]
+        return updated if self._tables.replace_if_unchanged(self._TABLE, updated_entity) else None
 
     @classmethod
     def _entity(cls, job: GenerationJob) -> dict[str, object]:
@@ -191,6 +235,9 @@ class AzureGenerationJobRepository:
             "created_at": job.created_at.isoformat(),
             "updated_at": job.updated_at.isoformat(),
             "confirmed": job.confirmed,
+            "narration_estimate": (
+                asdict(job.narration_estimate) if job.narration_estimate is not None else None
+            ),
         }
 
     @staticmethod
@@ -210,6 +257,11 @@ class AzureGenerationJobRepository:
             created_at=datetime.fromisoformat(str(entity["created_at"])),
             updated_at=datetime.fromisoformat(str(entity["updated_at"])),
             confirmed=bool(entity["confirmed"]),
+            narration_estimate=(
+                NarrationEstimate(**dict(entity["narration_estimate"]))
+                if entity.get("narration_estimate") is not None
+                else None
+            ),
         )
 
 
@@ -281,6 +333,8 @@ class CloudGenerationProvider:
         audio_stitcher: AudioStitcher | None = None,
         audio_duration_probe: AudioDurationProbe | None = None,
         tts_character_cap: int = 5000,
+        narration_confirmation_threshold: int = 10000,
+        narration_characters_per_minute: int = 900,
     ) -> None:
         """Initialize a private worker provider from external generation collaborators."""
         self._article_retriever = article_retriever
@@ -290,6 +344,8 @@ class CloudGenerationProvider:
         self._audio_stitcher = audio_stitcher
         self._audio_duration_probe = audio_duration_probe
         self._tts_character_cap = tts_character_cap
+        self._narration_confirmation_threshold = narration_confirmation_threshold
+        self._narration_characters_per_minute = narration_characters_per_minute
         self._pending: dict[bytes, tuple[EpisodeRequest, str]] = {}
 
     def retrieve(self, request: EpisodeRequest) -> EpisodeRequest:
@@ -308,9 +364,25 @@ class CloudGenerationProvider:
             raise GenerationProviderError("Could not access the cloud Episode Store.") from exc
         return None
 
-    def requires_confirmation(self, request: EpisodeRequest) -> bool:
-        """Let queue processing run directly; the API currently submits Summary jobs."""
-        return False
+    def confirmation_estimate(self, request: EpisodeRequest) -> NarrationEstimate | None:
+        """Estimate retrieved Narration before expensive audio synthesis."""
+        if request.script_strategy is not ScriptStrategy.NARRATION:
+            return None
+        strategy = self._script_strategies.get(request.script_strategy)
+        if strategy is None:
+            raise GenerationProviderError(
+                f"No Script Strategy is configured for '{request.script_strategy.value}'."
+            )
+        try:
+            script = strategy.create_script(request.article)
+        except ScriptCreationError as exc:
+            raise GenerationProviderError("Could not prepare the Narration script.") from exc
+        if len(script) <= self._narration_confirmation_threshold:
+            return None
+        return NarrationEstimate(
+            character_count=len(script),
+            listening_minutes=len(script) / self._narration_characters_per_minute,
+        )
 
     def synthesize(self, request: EpisodeRequest) -> bytes:
         """Create audio from the configured Script Strategy and retain context for stitching."""

@@ -27,6 +27,7 @@ from blog_to_podcast.episodes import (
     FfmpegAudioDurationProbe,
     FfmpegAudioStitcher,
     FirecrawlArticleRetriever,
+    NarrationEstimate,
     NarrationScriptStrategy,
     ScriptStrategy,
     SummaryScriptStrategy,
@@ -54,7 +55,7 @@ class ApiGenerationProvider:
         """Return no Episode because the API does not process jobs."""
         return None
 
-    def requires_confirmation(self, request: EpisodeRequest) -> bool:
+    def confirmation_estimate(self, request: EpisodeRequest) -> NarrationEstimate | None:
         """Reject a worker operation attempted in the API process."""
         raise GenerationProviderError("Generation Jobs must run in the private worker.")
 
@@ -111,6 +112,8 @@ def build_worker_provider(settings: Settings) -> CloudGenerationProvider:
         audio_stitcher=FfmpegAudioStitcher(),
         audio_duration_probe=FfmpegAudioDurationProbe(),
         tts_character_cap=settings.tts_character_cap,
+        narration_confirmation_threshold=settings.narration_confirmation_threshold,
+        narration_characters_per_minute=settings.narration_characters_per_minute,
     )
     return provider
 
