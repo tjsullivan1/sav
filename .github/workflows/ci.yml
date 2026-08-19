@@ -74,6 +74,7 @@ jobs:
     env:
       TF_VAR_tf_state_resource_group_name: ${{ vars.TF_STATE_RESOURCE_GROUP }}
       TF_VAR_tf_state_storage_account_name: ${{ vars.TF_STATE_STORAGE_ACCOUNT }}
+      TF_VAR_owner_object_id: ${{ vars.OWNER_OBJECT_ID || '00000000-0000-0000-0000-000000000000' }}
     defaults:
       run:
         working-directory: infra
