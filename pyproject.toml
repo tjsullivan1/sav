@@ -6,6 +6,10 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "agno>=2.2.10",
+    "azure-data-tables>=12.7.0",
+    "azure-identity>=1.25.3",
+    "azure-storage-blob>=12.30.0",
+    "azure-storage-queue>=12.17.0",
     "elevenlabs>=1.0.0",
     "fastapi>=0.141.1",
     "firecrawl-py>=4.6.0",

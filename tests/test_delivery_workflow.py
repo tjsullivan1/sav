@@ -37,3 +37,15 @@ def test_plan_identity_has_read_only_directory_and_state_permissions() -> None:
 
     assert 'role_definition_name = "Reader"' in terraform
     assert "azuread_directory_role_assignment" in terraform
+
+
+def test_private_worker_runs_the_immutable_image_as_a_storage_queue_consumer() -> None:
+    """Require the worker's image command to consume jobs without public ingress."""
+    terraform = Path("infra/production_platform.tf").read_text(encoding="utf-8")
+    worker = terraform.split('resource "azurerm_container_app" "worker"')[1]
+
+    assert "image  = local.application_image" in worker
+    assert 'command = ["python"]' in worker
+    assert 'args    = ["-m", "blog_to_podcast.worker"]' in worker
+    assert 'name  = "AZURE_STORAGE_ACCOUNT_NAME"' in worker
+    assert "ingress {" not in worker

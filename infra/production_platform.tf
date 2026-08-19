@@ -250,6 +250,7 @@ resource "azurerm_container_app" "ui" {
         name  = "APPLICATIONINSIGHTS_CONNECTION_STRING"
         value = azurerm_application_insights.production.connection_string
       }
+
     }
 
     min_replicas = 1
@@ -294,6 +295,36 @@ resource "azurerm_container_app" "api" {
         name  = "APPLICATIONINSIGHTS_CONNECTION_STRING"
         value = azurerm_application_insights.production.connection_string
       }
+
+      env {
+        name  = "AZURE_STORAGE_ACCOUNT_NAME"
+        value = azurerm_storage_account.production.name
+      }
+
+      env {
+        name  = "ENTRA_TENANT_ID"
+        value = data.azurerm_client_config.current.tenant_id
+      }
+
+      env {
+        name  = "API_APPLICATION_ID_URI"
+        value = var.api_application_id_uri
+      }
+
+      env {
+        name  = "APPROVED_USER_SUBJECTS"
+        value = coalesce(var.owner_object_id, "")
+      }
+
+      command = ["uvicorn"]
+      args = [
+        "blog_to_podcast.runtime:create_api_app",
+        "--factory",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000",
+      ]
     }
 
     min_replicas = 1
@@ -329,6 +360,12 @@ resource "azurerm_container_app" "worker" {
     identity            = azurerm_user_assigned_identity.worker.id
   }
 
+  secret {
+    name                = "azure-openai-api-key"
+    key_vault_secret_id = "${local.key_vault_uri}/secrets/azure-openai-api-key"
+    identity            = azurerm_user_assigned_identity.worker.id
+  }
+
   template {
     container {
       name   = "worker"
@@ -347,9 +384,32 @@ resource "azurerm_container_app" "worker" {
       }
 
       env {
+        name        = "AZURE_OPENAI_API_KEY"
+        secret_name = "azure-openai-api-key"
+      }
+
+      env {
+        name  = "AZURE_OPENAI_BASE_URL"
+        value = "${azurerm_cognitive_account.openai.endpoint}openai/v1/"
+      }
+
+      env {
+        name  = "AZURE_OPENAI_DEPLOYMENT"
+        value = azurerm_cognitive_deployment.chat.name
+      }
+
+      env {
         name  = "APPLICATIONINSIGHTS_CONNECTION_STRING"
         value = azurerm_application_insights.production.connection_string
       }
+
+      env {
+        name  = "AZURE_STORAGE_ACCOUNT_NAME"
+        value = azurerm_storage_account.production.name
+      }
+
+      command = ["python"]
+      args    = ["-m", "blog_to_podcast.worker"]
     }
 
     min_replicas = 0
