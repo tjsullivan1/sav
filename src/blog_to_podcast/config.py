@@ -55,6 +55,11 @@ class Settings(BaseSettings):
         description="Microsoft Entra API application ID URI suffix.",
         validation_alias="API_APPLICATION_ID_URI",
     )
+    generation_api_url: str = Field(
+        default="",
+        description="Base URL for the authenticated cloud Generation Job API.",
+        validation_alias="GENERATION_API_URL",
+    )
     approved_user_subjects_csv: str = Field(
         default="",
         description="Comma-separated Entra object IDs authorized for the Episode API.",
@@ -132,3 +137,13 @@ class Settings(BaseSettings):
             for subject in self.approved_user_subjects_csv.split(",")
             if subject.strip()
         }
+
+    @property
+    def is_cloud_ui_configured(self) -> bool:
+        """Whether this process should use the managed-identity Generation Job API."""
+        return bool(self.generation_api_url.strip() and self.api_application_id_uri.strip())
+
+    @property
+    def generation_api_scope(self) -> str:
+        """Return the app-role scope used by the UI managed identity."""
+        return f"api://{self.api_application_id_uri.strip()}/.default"

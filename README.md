@@ -83,6 +83,14 @@ ElevenLabs secrets, submit an authenticated `summary` request to
 retrieve `GET /v1/generation-jobs/{id}/episode` with the same Entra bearer token. Submit the same
 request again to verify the worker reports the retained Episode as ready without regenerating it.
 
+## Cloud UI
+
+The public Streamlit Container App is protected by Container Apps Entra authentication and the
+configured `owner_object_id`. After the owner signs in, the UI obtains its own managed-identity
+token for the Episode API; it never forwards the browser token or loads provider credentials.
+Submit an Episode Request, select **Refresh Job Status** while it is running, choose **Cancel Job**
+before synthesis if needed, and play or download the completed Episode from the authenticated UI.
+
 ## Personal-use source boundary
 
 Use this tool only for public content you are entitled to process. Respect site terms, robots
