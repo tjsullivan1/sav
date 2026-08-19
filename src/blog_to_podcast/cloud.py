@@ -9,7 +9,9 @@ from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from typing import Protocol
 
-from azure.data.tables import TableServiceClient
+from azure.core import MatchConditions
+from azure.core.exceptions import ResourceModifiedError, ResourceNotFoundError
+from azure.data.tables import TableServiceClient, UpdateMode
 from azure.identity import DefaultAzureCredential
 from azure.storage.blob import BlobServiceClient, ContentSettings
 from azure.storage.queue import QueueClient, QueueServiceClient
@@ -60,6 +62,12 @@ class TableStorage(Protocol):
     def query(self, table: str, partition_key: str) -> list[dict[str, object]]:
         """Return entities in a partition."""
 
+    def get(self, table: str, partition_key: str, row_key: str) -> dict[str, object] | None:
+        """Return one entity with its concurrency tag when present."""
+
+    def replace_if_unchanged(self, table: str, entity: dict[str, object]) -> bool:
+        """Replace an entity only when its concurrency tag is still current."""
+
 
 class AzureBlobStorage:
     """Blob Storage adapter authenticated with the workload identity."""
@@ -105,6 +113,33 @@ class AzureTableStorage:
         )
         return [dict(entity) for entity in entities]
 
+    def get(self, table: str, partition_key: str, row_key: str) -> dict[str, object] | None:
+        """Return one entity and its ETag for an optimistic-concurrency update."""
+        try:
+            entity = self._client.get_table_client(table).get_entity(
+                partition_key=partition_key, row_key=row_key
+            )
+        except ResourceNotFoundError:
+            return None
+        return {**dict(entity), "_etag": entity.metadata["etag"]}
+
+    def replace_if_unchanged(self, table: str, entity: dict[str, object]) -> bool:
+        """Replace an entity only if it has not changed since it was read."""
+        etag = entity.get("_etag")
+        if not isinstance(etag, str):
+            return False
+        updated = {key: value for key, value in entity.items() if key != "_etag"}
+        try:
+            self._client.get_table_client(table).update_entity(
+                entity=updated,
+                mode=UpdateMode.REPLACE,
+                etag=etag,
+                match_condition=MatchConditions.IfNotModified,
+            )
+        except ResourceModifiedError:
+            return False
+        return True
+
 
 class AzureGenerationQueue:
     """Storage Queue producer used by the public API."""
@@ -139,11 +174,8 @@ class AzureGenerationJobRepository:
 
     def get(self, job_id: str) -> GenerationJob | None:
         """Return a Generation Job when it exists."""
-        entities = self._tables.query(self._TABLE, self._PARTITION)
-        for entity in entities:
-            if entity["RowKey"] == job_id:
-                return self._job(entity)
-        return None
+        entity = self._tables.get(self._TABLE, self._PARTITION, job_id)
+        return self._job(entity) if entity is not None else None
 
     def save(self, job: GenerationJob) -> GenerationJob:
         """Persist a full Generation Job replacement."""
@@ -162,8 +194,11 @@ class AzureGenerationJobRepository:
         narration_estimate: NarrationEstimate | None = None,
     ) -> GenerationJob | None:
         """Persist a valid lifecycle transition."""
-        job = self.get(job_id)
-        if job is None or job.status not in expected_statuses:
+        entity = self._tables.get(self._TABLE, self._PARTITION, job_id)
+        if entity is None:
+            return None
+        job = self._job(entity)
+        if job.status not in expected_statuses:
             return None
         updated = replace(
             job,
@@ -176,7 +211,9 @@ class AzureGenerationJobRepository:
                 job.narration_estimate if narration_estimate is None else narration_estimate
             ),
         )
-        return self.save(updated)
+        updated_entity = self._entity(updated)
+        updated_entity["_etag"] = entity["_etag"]
+        return updated if self._tables.replace_if_unchanged(self._TABLE, updated_entity) else None
 
     @classmethod
     def _entity(cls, job: GenerationJob) -> dict[str, object]:

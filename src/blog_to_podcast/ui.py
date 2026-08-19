@@ -37,6 +37,32 @@ class ApiResponse:
 
 
 @dataclass(frozen=True)
+class NarrationEstimateView:
+    """Listener-readable estimate for a Narration Job awaiting confirmation."""
+
+    character_count: int
+    listening_minutes: float
+
+    @classmethod
+    def from_payload(cls, payload: object) -> NarrationEstimateView | None:
+        """Parse an optional estimate from the stable Generation Job response."""
+        if payload is None:
+            return None
+        if not isinstance(payload, dict):
+            raise GenerationJobApiError("The Episode API returned an invalid Narration estimate.")
+        character_count = payload.get("character_count")
+        listening_minutes = payload.get("listening_minutes")
+        if (
+            not isinstance(character_count, int)
+            or isinstance(character_count, bool)
+            or not isinstance(listening_minutes, int | float)
+            or isinstance(listening_minutes, bool)
+        ):
+            raise GenerationJobApiError("The Episode API returned an invalid Narration estimate.")
+        return cls(character_count=character_count, listening_minutes=float(listening_minutes))
+
+
+@dataclass(frozen=True)
 class GenerationJobView:
     """Listener-visible representation of a Generation Job."""
 
@@ -44,7 +70,7 @@ class GenerationJobView:
     status: str
     message: str
     status_url: str
-    estimate: dict[str, int | float] | None = None
+    estimate: NarrationEstimateView | None = None
 
 
 class GenerationJobApiError(RuntimeError):
@@ -154,7 +180,7 @@ class GenerationJobApi:
                 status=payload["status"],
                 message=payload["message"],
                 status_url=payload["status_url"],
-                estimate=payload.get("estimate"),
+                estimate=NarrationEstimateView.from_payload(payload.get("estimate")),
             )
         except (KeyError, TypeError, json.JSONDecodeError) as exc:
             raise GenerationJobApiError(

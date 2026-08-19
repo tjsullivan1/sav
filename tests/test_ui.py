@@ -95,7 +95,9 @@ def test_ui_submits_polls_cancels_and_retrieves_an_episode_through_the_api() -> 
 
     assert submitted.status == "queued"
     assert polled.message == "Confirmation is required before synthesis."
-    assert polled.estimate == {"character_count": 12000, "listening_minutes": 13.3}
+    assert polled.estimate is not None
+    assert polled.estimate.character_count == 12000
+    assert polled.estimate.listening_minutes == 13.3
     assert confirmed.status == "queued"
     assert cancelled.status == "cancelled"
     assert audio == b"mp3-bytes"

@@ -30,8 +30,12 @@ class FakeBlobStorage:
 class FakeTableStorage:
     def __init__(self) -> None:
         self.entities: list[dict[str, object]] = []
+        self._next_etag = 1
 
     def upsert(self, table: str, entity: dict[str, object]) -> None:
+        saved = {key: value for key, value in entity.items() if key != "_etag"}
+        saved["_etag"] = str(self._next_etag)
+        self._next_etag += 1
         self.entities = [
             candidate
             for candidate in self.entities
@@ -39,12 +43,31 @@ class FakeTableStorage:
                 candidate["PartitionKey"],
                 candidate["RowKey"],
             )
-            != (entity["PartitionKey"], entity["RowKey"])
+            != (saved["PartitionKey"], saved["RowKey"])
         ]
-        self.entities.append(entity)
+        self.entities.append(saved)
 
     def query(self, table: str, partition_key: str) -> list[dict[str, object]]:
-        return [entity for entity in self.entities if entity["PartitionKey"] == partition_key]
+        return [
+            dict(entity) for entity in self.entities if entity["PartitionKey"] == partition_key
+        ]
+
+    def get(self, table: str, partition_key: str, row_key: str) -> dict[str, object] | None:
+        return next(
+            (
+                dict(entity)
+                for entity in self.entities
+                if entity["PartitionKey"] == partition_key and entity["RowKey"] == row_key
+            ),
+            None,
+        )
+
+    def replace_if_unchanged(self, table: str, entity: dict[str, object]) -> bool:
+        current = self.get(table, str(entity["PartitionKey"]), str(entity["RowKey"]))
+        if current is None or current["_etag"] != entity.get("_etag"):
+            return False
+        self.upsert(table, entity)
+        return True
 
 
 class ChangingArticleRetriever:
@@ -163,6 +186,51 @@ def test_cloud_job_repository_persists_the_prepared_narration_request_and_estima
     assert awaiting_confirmation.request == prepared_request
     assert awaiting_confirmation.narration_estimate == estimate
     assert repository.get(initial.id) == awaiting_confirmation
+
+
+def test_cloud_job_repository_does_not_overwrite_a_concurrent_cancellation() -> None:
+    class CancellationRacingTable(FakeTableStorage):
+        def __init__(self) -> None:
+            super().__init__()
+            self.repository: AzureGenerationJobRepository | None = None
+            self.cancelled = False
+
+        def replace_if_unchanged(self, table: str, entity: dict[str, object]) -> bool:
+            if not self.cancelled:
+                self.cancelled = True
+                assert self.repository is not None
+                self.repository.transition(
+                    str(entity["RowKey"]),
+                    {GenerationJobStatus.QUEUED},
+                    GenerationJobStatus.CANCELLED,
+                    "Episode generation cancelled.",
+                    datetime(2026, 8, 19, 15, 1, tzinfo=UTC),
+                )
+            return super().replace_if_unchanged(table, entity)
+
+    tables = CancellationRacingTable()
+    repository = AzureGenerationJobRepository(tables)
+    tables.repository = repository
+    initial = GenerationJob(
+        id="job-2",
+        request=_request(),
+        status=GenerationJobStatus.QUEUED,
+        message="Episode request queued.",
+        created_at=datetime(2026, 8, 19, 15, 0, tzinfo=UTC),
+        updated_at=datetime(2026, 8, 19, 15, 0, tzinfo=UTC),
+    )
+    repository.create(initial)
+
+    transition = repository.transition(
+        initial.id,
+        {GenerationJobStatus.QUEUED},
+        GenerationJobStatus.RETRIEVING,
+        "Retrieving the Article.",
+        datetime(2026, 8, 19, 15, 1, tzinfo=UTC),
+    )
+
+    assert transition is None
+    assert repository.get(initial.id).status is GenerationJobStatus.CANCELLED  # type: ignore[union-attr]
 
 
 def test_cloud_episode_store_retains_changed_source_as_a_new_revision() -> None:
