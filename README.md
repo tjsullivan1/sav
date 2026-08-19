@@ -75,6 +75,14 @@ Actions OIDC; it does not use stored Azure credentials. Follow the one-time
 [Terraform state and GitHub OIDC bootstrap](docs/terraform-bootstrap.md) before opening a pull
 request that changes infrastructure.
 
+## Cloud Summary smoke path
+
+After deploying an immutable image tag and setting the worker's Azure OpenAI, Firecrawl, and
+ElevenLabs secrets, submit an authenticated `summary` request to
+`POST /v1/generation-jobs`. Poll the returned `status_url` until its status is `completed`, then
+retrieve `GET /v1/generation-jobs/{id}/episode` with the same Entra bearer token. Submit the same
+request again to verify the worker reports the retained Episode as ready without regenerating it.
+
 ## Personal-use source boundary
 
 Use this tool only for public content you are entitled to process. Respect site terms, robots

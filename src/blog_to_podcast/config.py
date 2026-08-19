@@ -42,6 +42,24 @@ class Settings(BaseSettings):
     firecrawl_api_key: str = Field(
         default="", description="Firecrawl API key.", validation_alias="FIRECRAWL_API_KEY"
     )
+    storage_account_name: str = Field(
+        default="",
+        description="Azure Storage account name.",
+        validation_alias="AZURE_STORAGE_ACCOUNT_NAME",
+    )
+    entra_tenant_id: str = Field(
+        default="", description="Microsoft Entra tenant ID.", validation_alias="ENTRA_TENANT_ID"
+    )
+    api_application_id_uri: str = Field(
+        default="",
+        description="Microsoft Entra API application ID URI suffix.",
+        validation_alias="API_APPLICATION_ID_URI",
+    )
+    approved_user_subjects_csv: str = Field(
+        default="",
+        description="Comma-separated Entra object IDs authorized for the Episode API.",
+        validation_alias="APPROVED_USER_SUBJECTS",
+    )
     voice_id: str = Field(
         default=DEFAULT_VOICE_ID,
         description="ElevenLabs voice identifier.",
@@ -105,3 +123,12 @@ class Settings(BaseSettings):
     def is_complete(self) -> bool:
         """Whether every required credential has been supplied."""
         return not self.missing_fields()
+
+    @property
+    def approved_user_subjects(self) -> set[str]:
+        """Return authorized Entra object IDs from the deployment configuration."""
+        return {
+            subject.strip()
+            for subject in self.approved_user_subjects_csv.split(",")
+            if subject.strip()
+        }

@@ -70,6 +70,9 @@ class FakeProvider:
     def retrieve(self, request):
         return request
 
+    def find_existing(self, request):
+        return None
+
     def requires_confirmation(self, request):
         return request.script_strategy is ScriptStrategy.NARRATION
 
@@ -184,6 +187,32 @@ def test_provider_failure_marks_job_as_failed() -> None:
 
     assert result.status is GenerationJobStatus.FAILED
     assert result.message == "Episode generation failed: Article is unavailable."
+
+
+def test_worker_reuses_a_matching_episode_without_synthesizing() -> None:
+    class ReusingProvider(FakeProvider):
+        def __init__(self) -> None:
+            self.synthesis_calls = 0
+            self.episode = Episode(
+                article=_article(), script="Existing script.", audio=b"existing-audio"
+            )
+
+        def find_existing(self, request):
+            return self.episode
+
+        def synthesize(self, request):
+            self.synthesis_calls += 1
+            return super().synthesize(request)
+
+    provider = ReusingProvider()
+    service, _, store = _service(provider)
+    job = service.submit(_request(), Identity.user("owner"))
+
+    completed = service.process(job.id)
+
+    assert completed.status is GenerationJobStatus.COMPLETED
+    assert store.get(job.id) == provider.episode
+    assert provider.synthesis_calls == 0
 
 
 def test_worker_identity_cannot_use_public_job_operations() -> None:

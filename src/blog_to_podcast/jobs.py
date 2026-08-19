@@ -108,6 +108,9 @@ class GenerationProvider(Protocol):
     def retrieve(self, request: EpisodeRequest) -> EpisodeRequest:
         """Retrieve and normalize an Article for generation."""
 
+    def find_existing(self, request: EpisodeRequest) -> Episode | None:
+        """Return a retained Episode when the request's identity already matches."""
+
     def requires_confirmation(self, request: EpisodeRequest) -> bool:
         """Whether the retrieved request needs explicit confirmation."""
 
@@ -261,7 +264,13 @@ class GenerationJobService:
         if retrieving is None:
             return self._get(job.id)
         try:
+            existing_episode = self._provider.find_existing(retrieving.request)
+            if existing_episode is not None:
+                return self._complete_existing_episode(retrieving, existing_episode)
             prepared_request = self._provider.retrieve(retrieving.request)
+            existing_episode = self._provider.find_existing(prepared_request)
+            if existing_episode is not None:
+                return self._complete_existing_episode(retrieving, existing_episode)
             if self._provider.requires_confirmation(prepared_request) and not retrieving.confirmed:
                 awaiting_confirmation = self._transition(
                     retrieving.id,
@@ -316,6 +325,17 @@ class GenerationJobService:
         if identity.kind == "application" and self._UI_ROLE in identity.roles:
             return
         raise AccessDeniedError("This identity cannot access the Episode API.")
+
+    def _complete_existing_episode(self, job: GenerationJob, episode: Episode) -> GenerationJob:
+        """Link a reused Episode to its Job and mark it ready to listen to."""
+        self._episode_store.save(job.id, episode)
+        completed = self._transition(
+            job.id,
+            {GenerationJobStatus.RETRIEVING},
+            status=GenerationJobStatus.COMPLETED,
+            message="Existing Episode is ready to listen to.",
+        )
+        return completed or self._get(job.id)
 
     def _get(self, job_id: str) -> GenerationJob:
         """Return a Job or raise the service's stable not-found error."""
