@@ -706,7 +706,7 @@ wheels = [
 
 [[package]]
 name = "firecrawl-py"
-version = "4.35.1"
+version = "4.40.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -717,9 +717,9 @@ dependencies = [
     { name = "requests" },
     { name = "websockets" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/fe/86/c857d0575c0b892901f6ecd6796adcf4e284dbb922b433bc093fdf765a9e/firecrawl_py-4.35.1.tar.gz", hash = "sha256:e479e8510040b446bdd2412b56627f2f5b2a4bc8fec63e1176dbd3e72d43ce8e", size = 219399, upload-time = "2026-08-15T00:39:50.918Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/af/20/1cf843efc9911f40be240d05c44b364b24d5a1b2be2299293aa5ae14209d/firecrawl_py-4.40.0.tar.gz", hash = "sha256:4b68709871962b8c214e4113e8100633d9d7c66567536a0214402ef8638f3581", size = 231735, upload-time = "2026-08-26T22:56:45.435Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/56/ab/ffb0a8777cf1fa8474b29098e211f93e27e7ec542a7a07c3f1154f9524ae/firecrawl_py-4.35.1-py3-none-any.whl", hash = "sha256:787dbd3f3b890a2c8c43117fe248a57caf37f14df53d05c6751e88cea02b4e50", size = 269945, upload-time = "2026-08-15T00:39:49.344Z" },
+    { url = "https://files.pythonhosted.org/packages/b6/24/8c17af293e69fc56527f0fd760af2d36ca03afb147f9ab2ba6540c12f3cd/firecrawl_py-4.40.0-py3-none-any.whl", hash = "sha256:a2e7816d65aa794fa269bc96fa90680767cbdb139faf227bcd88a1281975fa0e", size = 284451, upload-time = "2026-08-26T22:56:44.111Z" },
 ]
 
 [[package]]
@@ -860,8 +860,8 @@ name = "httpcore2"
 version = "2.10.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "h11", marker = "sys_platform != 'emscripten'" },
-    { name = "truststore", marker = "sys_platform != 'emscripten'" },
+    { name = "h11" },
+    { name = "truststore" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/a9/83/a896fc59940fc5a6e2aff3a4be1d92fa890112936803b331cae75a993c34/httpcore2-2.10.0.tar.gz", hash = "sha256:13c0cc3d1919d4f28457f60cd2c2abe04113a8af184ccf1142811beba936f9dc", size = 67427, upload-time = "2026-08-09T09:11:32.123Z" }
 wheels = [
